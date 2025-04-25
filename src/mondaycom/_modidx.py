@@ -7,4 +7,5 @@ d = { 'settings': { 'branch': 'main',
                 'lib_path': 'src/mondaycom'},
   'syms': { 'mondaycom.core': { 'mondaycom.core.get_data': ('core.html#get_data', 'mondaycom/core.py'),
                                 'mondaycom.core.get_items': ('core.html#get_items', 'mondaycom/core.py'),
-                                'mondaycom.core.item_to_markdown': ('core.html#item_to_markdown', 'mondaycom/core.py')}}}
+                                'mondaycom.core.item_to_markdown': ('core.html#item_to_markdown', 'mondaycom/core.py'),
+                                'mondaycom.core.query_sprint_tasks': ('core.html#query_sprint_tasks', 'mondaycom/core.py')}}}
