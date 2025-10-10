@@ -1,7 +1,7 @@
 [project]
 name = "mondaycom"
 version = "0.1.0"
-description = "Add your description here"
+description =  "Convert Monday.com tasks for current sprint to markdown task list"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
