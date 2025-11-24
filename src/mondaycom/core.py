@@ -182,7 +182,7 @@ def item_to_markdown(
             duedate = col["text"]
 
     # Build the markdown string
-    markdown = f"\n- [ ] {name}{role}"
+    markdown = f"\n- [ ] #sprint {name}{role}"
 
     # Add duration if present
     if duration > 0:
