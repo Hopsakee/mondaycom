@@ -1,9 +1,0 @@
-project:
-  output-dir: _docs
-
-website:
-  title: "mondaycom"
-  site-url: "https://Hopsakee.github.io/mondaycom"
-  description: ""Convert Monday.com tasks for current sprint to markdown task list""
-  repo-branch: main
-  repo-url: "https://github.com/Hopsakee/mondaycom"
