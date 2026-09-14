@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Generic wrapper: run any `monday` subcommand from anywhere, in the project venv.
+#   scripts/monday whoami
+#   scripts/monday columns --board sprint
+set -euo pipefail
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec uv run --project "$REPO" monday "$@"

@@ -1,1 +1,3 @@
-__version__ = "0.0.1"
+"""Command-line tools for working with monday.com."""
+
+__version__ = "0.2.0"
