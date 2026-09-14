@@ -1306,6 +1306,20 @@ def portfolio_table_rows(
 DETAIL_COLUMNS = ("Epic", "Status epic", "Stuck", "Trekker", "Priority", "STP done", "STP left", "Progress")
 
 
+#: The schemes an `href` out of the boards may carry. Every other link on these pages
+#: is built by `config.item_url`, but the IV Portfolio's Fortes link is a free-text
+#: column typed by hand — and a `javascript:` URL in an anchor runs in this page's own
+#: origin, so an address we do not recognise is shown as text rather than linked.
+LINK_SCHEMES = ("https://", "http://")
+
+
+def external_link(text: str, url: str) -> Any:
+    """`text` as a link out to `url`, or as plain text when `url` is not a web address."""
+    if not url.lower().startswith(LINK_SCHEMES):
+        return text
+    return A(text, href=url, target="_blank", rel="noopener")
+
+
 def portfolio_meta(item: PortfolioItem) -> Any:
     """The item's own fields, as a row of labelled facts rather than a second table."""
     facts = [
@@ -1315,7 +1329,7 @@ def portfolio_meta(item: PortfolioItem) -> Any:
         ("Projectleider", item.lead),
         ("Start", item.start),
         ("Einddatum", item.end),
-        ("Fortes", A(item.ref or "open", href=item.link, target="_blank", rel="noopener") if item.link else ""),
+        ("Fortes", external_link(item.ref or "open", item.link) if item.link else ""),
         ("monday.com", A("open the item", href=item.url, target="_blank", rel="noopener")),
     ]
     return Div(*[Div(Small(label), Span(value), cls="fact") for label, value in facts if value], cls="meta")
