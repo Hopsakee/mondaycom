@@ -27,6 +27,7 @@ packages = ["src/mondaycom"]
 dev = [
     "mypy>=1.11.2",
     "poethepoet>=0.29.0",
+    "pre-commit>=4.6.2",
     "pytest>=8.3.3",
     "ruff>=0.6.8",
     "types-requests>=2.32.0",
