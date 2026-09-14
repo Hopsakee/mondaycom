@@ -1,3 +1,9 @@
+# The offline mirrors under docs/ are verbatim copies of upstream documentation. Every
+# hook skips them: the whitespace fixers would rewrite 37 of the markdown files, and the
+# ruff hooks would reformat the two vendored FastHTML examples and "fix" their lint.
+# Any of that makes scripts/sync-docs.sh show spurious diffs against upstream forever.
+exclude: ^docs/(monday-api|fasthtml)/
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.5
