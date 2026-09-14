@@ -321,6 +321,19 @@ def cmd_whoami(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    """Serve the FastHTML web interface."""
+    # Read at import time by web.py, so it has to be set before the import. Without the
+    # reloader there is nothing to live-refresh *from*, and the socket only adds noise.
+    os.environ["MONDAY_WEB_LIVE"] = "1" if args.reload else "0"
+
+    from mondaycom import web  # imported lazily: the other subcommands should not pay for it
+
+    print(f"serving on http://{args.host}:{args.port}  (ctrl-c to stop)", file=sys.stderr)
+    web.run(host=args.host, port=args.port, reload=args.reload)
+    return 0
+
+
 def cmd_query(args: argparse.Namespace) -> int:
     """Run a raw GraphQL query from a file or stdin and pretty-print the JSON."""
     if args.file == "-":
@@ -434,6 +447,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = subs.add_parser("whoami", help="show the user behind the configured API token")
     p.set_defaults(func=cmd_whoami)
+
+    p = subs.add_parser("web", help="serve the sprint tasklist as a local web page")
+    p.add_argument("--host", default="127.0.0.1", help="bind address (default: localhost only)")
+    p.add_argument("--port", type=int, default=5001, help="port to listen on")
+    p.add_argument(
+        "--no-reload",
+        dest="reload",
+        action="store_false",
+        help="do not restart or live-refresh the browser on code changes",
+    )
+    p.set_defaults(func=cmd_web, reload=True)
 
     p = subs.add_parser("query", help="run a raw GraphQL query")
     p.add_argument("file", help="path to a .graphql file, or - for stdin")
