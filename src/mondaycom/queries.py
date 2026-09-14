@@ -8,6 +8,7 @@ literal ``"assigned_to_me"``. See docs/monday-api/reference/items-page.md.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from textwrap import dedent
 
 from mondaycom.config import (
@@ -28,6 +29,20 @@ PAGE_LIMIT = 500
 #: — the limit is what a query's complexity is charged on. `fetch_sprint_items` raises
 #: rather than truncating if the group ever outgrows it.
 GROUP_LIMIT = 300
+
+
+def _iso_date(value: str) -> str:
+    """`value` as the ``YYYY-MM-DD`` a date filter compares against, or a `ValueError`.
+
+    The date is the one filter value that is not a number and not a list monday.com
+    hands us — it is typed by a human. Checking its shape here keeps anything that is
+    not a date out of the query text, whichever caller supplied it.
+    """
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"{value!r} is not a date: expected YYYY-MM-DD") from None
+    return value
 
 
 def _page_args(cursor: str | None, limit: int = PAGE_LIMIT) -> str:
@@ -59,10 +74,14 @@ def sprint_tasks(
             including tasks with no epic linked at all.
         board: board to query.
     """
+    # Every value interpolated into a query is escaped by the thing that shapes it:
+    # `json.dumps` for text, `int` for ids. The date gets both — its shape is checked
+    # and it is then written as JSON, so it cannot end the string literal it sits in.
+    due = json.dumps(["EXACT", _iso_date(due_on_or_before)])
     rules = [
         f"""{{
                             column_id: "{board.column("due_date")}",
-                            compare_value: ["EXACT", "{due_on_or_before}"],
+                            compare_value: {due},
                             operator: lower_than_or_equal
                         }}"""
     ]

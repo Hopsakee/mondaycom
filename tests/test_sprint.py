@@ -135,3 +135,14 @@ def test_query_without_epics_has_no_epic_rule() -> None:
 
 def test_query_requests_the_epic_display_value() -> None:
     assert "display_value" in queries.sprint_tasks("2026-09-19")
+
+
+@pytest.mark.parametrize(
+    "end",
+    ['2026-09-19"], operator: any_of}, {column_id: "x", compare_value: ["y', "19-09-2026", "next saturday", ""],
+)
+def test_a_date_that_is_not_a_date_never_reaches_the_query(end: str) -> None:
+    """The sprint end is the one filter value a human types, so its shape is checked
+    before it is written into the query rather than after it has changed the rules."""
+    with pytest.raises(ValueError):
+        queries.sprint_tasks(end)

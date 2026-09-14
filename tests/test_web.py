@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -889,6 +890,16 @@ def test_the_item_page_shows_its_fields_its_totals_and_its_epics(client: TestCli
     assert "boards/5097962810/pulses/p1" in body, "and the item on monday.com"
     assert tiles(body) == {"Epics": "2", "Done": "14", "Left": "8", "Stuck": "1"}
     assert "Vastgelopen koppeling" in body and "Kernregistratie" in body
+
+
+def test_a_fortes_link_that_is_not_a_web_address_is_not_a_link(client: TestClient) -> None:
+    """The Fortes column is free text on the board, and a `javascript:` href would run
+    in this page's own origin — so an address we do not recognise stays text."""
+    web._PORTFOLIO[:] = [replace(PORTFOLIO[0], link="javascript:alert(1)"), *PORTFOLIO[1:]]
+    web._EPICS[:] = [*EPICS, HELD_UP]
+    body = client.get("/portfolio_item_view", params={"item": "p1"}, headers=HTMX).text
+    assert "javascript:" not in body
+    assert ">169115<" in body, "the id is still shown, just not as a link"
 
 
 def test_the_item_page_puts_the_blocked_epics_first(client: TestClient) -> None:
