@@ -1,0 +1,297 @@
+# monday.com Platform API Documentation
+
+> Connect to your monday.com data with the platform API - a GraphQL API to build apps, integrations, and AI agents on the AI work platform. SDKs, MCP server, webhooks, and automation tools.
+
+Append .md to any documentation page URL to get its markdown version.
+
+## Guides
+- [The basics](https://developer.monday.com/api-reference/docs/basics.md): Read what the monday platform API can do, who can use it, and how it works
+- [Authentication](https://developer.monday.com/api-reference/docs/authentication.md): Learn about monday platform API token permissions, how to access tokens, and how to authenticate requests
+- [Versioning](https://developer.monday.com/api-reference/docs/api-versioning.md): Learn about different versions of the monday.com platform API, when they are released, and how to access them
+- [Rate limits](https://developer.monday.com/api-reference/docs/rate-limits.md): Learn more about the monday.com platform API rate limits, calculating complexity, and timeout policies
+- [Idempotency](https://developer.monday.com/api-reference/docs/idempotency.md): Learn how to safely retry mutations using the Idempotency-Key header to prevent duplicate side effects
+- [Error handling](https://developer.monday.com/api-reference/docs/error-handling.md)
+- [Release notes](https://developer.monday.com/api-reference/docs/release-notes.md)
+- [Migrating the User entity: 2026-04 → 2026-10](https://developer.monday.com/api-reference/docs/migrating-user-entity-to-2026-10.md): Upgrade your monday.com integration to the new User entity shape introduced in API version 2026-07, and prepare for the legacy field removals scheduled for 2026-10.
+- [Migrating to version 2025-04](https://developer.monday.com/api-reference/docs/migrating-to-version-2025-04.md)
+- [Platform MCP overview](https://developer.monday.com/api-reference/docs/mondaycom-mcp.md): Connect AI agents to monday.com data through the hosted Platform MCP server
+- [Compatible MCP clients](https://developer.monday.com/api-reference/docs/compatible-mcp-clients.md): Connect monday.com to AI assistants and tools through the hosted MCP server — and learn how to get your own MCP client registered
+- [Integrate with the monday MCP server](https://developer.monday.com/api-reference/docs/integrate-with-monday-mcp.md): Connect your MCP client to the monday.com hosted MCP server — choose API token, OAuth, or dynamic client registration
+- [Authenticate with an API token](https://developer.monday.com/api-reference/docs/mcp-api-token.md): Connect to the monday.com hosted MCP server with a personal API token for personal use, prototyping, and testing
+- [Control MCP access with your own OAuth app](https://developer.monday.com/api-reference/docs/control-mcp-access-with-oauth-app.md): Replace the hosted MCP connector with your own OAuth app to control who connects, which clients can connect, and which permission scopes the MCP connection can use
+- [Make your MCP integration publicly available](https://developer.monday.com/api-reference/docs/mcp-dynamic-client-registration.md): Register your MCP integration with monday.com and authenticate publicly available clients with OAuth 2.0 dynamic client registration (DCR)
+- [Platform MCP tools](https://developer.monday.com/api-reference/docs/platform-mcp-tools.md): Complete reference for all tools available in the monday.com Platform MCP server, organized by category, with links to individual tool pages and equivalent GraphQL APIs.
+- [Create Board (Platform MCP)](https://developer.monday.com/api-reference/docs/create-board.md): Creates a new monday.com board in a specified workspace with configurable visibility, description, and ownership using the Platform MCP.
+- [Get Board Info (Platform MCP)](https://developer.monday.com/api-reference/docs/get-board-info.md): Returns comprehensive metadata for a board, including its columns, groups, views, owners, and workspace details using the Platform MCP.
+- [Get Board Items (Platform MCP)](https://developer.monday.com/api-reference/docs/get-board-items.md): Retrieves items from a board with pagination, optional column values, filters, sorting, and sub-item support using the Platform MCP.
+- [Get Board Activity (Platform MCP)](https://developer.monday.com/api-reference/docs/get-board-activity.md): Returns the activity log for a board, showing what changed, when, and by whom, over a configurable time range using the Platform MCP.
+- [Board Insights (Platform MCP)](https://developer.monday.com/api-reference/docs/board-insights.md): Calculates aggregated summaries of board data by filtering, grouping, and applying aggregation functions to columns using the Platform MCP.
+- [Create Group (Platform MCP)](https://developer.monday.com/api-reference/docs/create-group.md): Creates a new group (section) in a monday.com board with an optional color and position relative to existing groups using the Platform MCP.
+- [Create Column (Platform MCP)](https://developer.monday.com/api-reference/docs/create-column.md): Adds a new column of a specified type to a monday.com board, with an optional title, description, and type-specific settings using the Platform MCP.
+- [Get Column Type Info (Platform MCP)](https://developer.monday.com/api-reference/docs/get-column-type-info.md): Returns the JSON settings schema or filter/aggregation guidelines for a specific monday.com column type using the Platform MCP.
+- [Create Item (Platform MCP)](https://developer.monday.com/api-reference/docs/create-item.md): Creates a new item on a board, optionally with column values, as a sub-item under a parent, or as a duplicate of an existing item using the Platform MCP.
+- [Change Item Column Values (Platform MCP)](https://developer.monday.com/api-reference/docs/change-item-column-values.md): Updates one or more column values on an existing monday.com item in a single call using the Platform MCP.
+- [Create Workspace (Platform MCP)](https://developer.monday.com/api-reference/docs/create-workspace.md): Creates a new workspace in your monday.com account with a specified name, kind, and optional description using the Platform MCP.
+- [Update Workspace (Platform MCP)](https://developer.monday.com/api-reference/docs/update-workspace.md): Updates the name, description, kind, or account product association of an existing workspace using the Platform MCP.
+- [List Workspaces (Platform MCP)](https://developer.monday.com/api-reference/docs/list-workspaces.md): Returns a paginated list of all workspaces available to the authenticated user, including their IDs, names, and descriptions using the Platform MCP.
+- [Workspace Info (Platform MCP)](https://developer.monday.com/api-reference/docs/workspace-info.md): Returns the boards, docs, and folders inside a workspace, including which folder each item belongs to using the Platform MCP.
+- [Create Folder (Platform MCP)](https://developer.monday.com/api-reference/docs/create-folder.md): Creates a new folder inside a monday.com workspace, with optional color, icon, font weight, and parent folder settings using the Platform MCP.
+- [Update Folder (Platform MCP)](https://developer.monday.com/api-reference/docs/update-folder.md): Updates the name, color, icon, position, or parent of an existing folder in monday.com using the Platform MCP.
+- [Move Object (Platform MCP)](https://developer.monday.com/api-reference/docs/move-object.md): Moves a board, folder, or overview to a different position, parent folder, or workspace in monday.com using the Platform MCP.
+- [Create Doc (Platform MCP)](https://developer.monday.com/api-reference/docs/create-doc.md): Creates a new monday.com document in a workspace or attached to a board item, then populates it with the provided markdown content using the Platform MCP.
+- [Update Doc (Platform MCP)](https://developer.monday.com/api-reference/docs/update-doc.md): Updates an existing monday.com document by executing an ordered list of operations such as appending content, renaming, editing blocks, or adding comments using the Platform MCP.
+- [Read Docs (Platform MCP)](https://developer.monday.com/api-reference/docs/read-docs.md): Retrieves monday.com documents with their full markdown content and block structure, or fetches the version history of a single document using the Platform MCP.
+- [Create Dashboard (Platform MCP)](https://developer.monday.com/api-reference/docs/create-dashboard.md): Creates a new monday.com dashboard that aggregates and visualizes data from one or more boards using the Platform MCP.
+- [Create Widget (Platform MCP)](https://developer.monday.com/api-reference/docs/create-widget.md): Adds a new data visualization widget to a monday.com dashboard or board view with type-specific configuration settings using the Platform MCP.
+- [All Widgets Schema (Platform MCP)](https://developer.monday.com/api-reference/docs/all-widgets-schema.md): Returns the complete JSON Schema definitions for all available widget types in monday.com, including required fields, data types, and configuration options using the Platform MCP.
+- [Create View (Platform MCP)](https://developer.monday.com/api-reference/docs/create-view.md): Creates a new board view (tab) with optional filters and sorting on a monday.com board using the Platform MCP.
+- [Create Table View (Platform MCP)](https://developer.monday.com/api-reference/docs/create-view-table.md): Creates a new table-type board view with filters, sort, tags, and table-specific settings (column visibility/order and group-by) using the Platform MCP.
+- [Update View (Platform MCP)](https://developer.monday.com/api-reference/docs/update-view.md): Updates an existing board view (tab) — its name, filters, or sort order — on a monday.com board using the Platform MCP.
+- [Update Table View (Platform MCP)](https://developer.monday.com/api-reference/docs/update-view-table.md): Updates an existing table-type board view — name, filters, sort, tags, or table-specific settings (column visibility/order and group-by) using the Platform MCP.
+- [Create Form (Platform MCP)](https://developer.monday.com/api-reference/docs/create-form.md): Creates a new monday.com WorkForm and a backing board to store responses, returning a form token for subsequent form operations using the Platform MCP.
+- [Get Form (Platform MCP)](https://developer.monday.com/api-reference/docs/get-form.md): Retrieves the full structure of a monday.com WorkForm by its form token, including all questions, settings, appearance, and features using the Platform MCP.
+- [Update Form (Platform MCP)](https://developer.monday.com/api-reference/docs/update-form.md): Updates a monday.com WorkForm's settings, appearance, features, tags, or question order using a single action-based call using the Platform MCP.
+- [Form Questions Editor (Platform MCP)](https://developer.monday.com/api-reference/docs/form-questions-editor.md): Creates, updates, or deletes a single question on a monday.com WorkForm, with support for 23 question types and conditional visibility rules using the Platform MCP.
+- [Create Form Submission (Platform MCP)](https://developer.monday.com/api-reference/docs/create-form-submission.md): Submits a completed response to a monday.com WorkForm, creating a new item on the form's backing board with the provided answers using the Platform MCP.
+- [Get User Context (Platform MCP)](https://developer.monday.com/api-reference/docs/get-user-context.md): Returns information about the currently authenticated user, their account, and their most relevant boards, people, and workspaces using the Platform MCP.
+- [List Users and Teams (Platform MCP)](https://developer.monday.com/api-reference/docs/list-users-and-teams.md): Fetches user profiles and team data from the account, with several targeting modes for looking up specific users or teams efficiently using the Platform MCP.
+- [Create Update (Platform MCP)](https://developer.monday.com/api-reference/docs/create-update.md): Posts a new update (comment) on a monday.com item, with support for mentions and threaded replies using the Platform MCP.
+- [Get Updates (Platform MCP)](https://developer.monday.com/api-reference/docs/get-updates.md): Retrieves updates (comments and posts) from a monday.com item or board, with optional filtering by date range, replies, and file attachments using the Platform MCP.
+- [Create Notification (Platform MCP)](https://developer.monday.com/api-reference/docs/create-notification.md): Sends a notification to a user via the monday.com bell icon, with an optional email, targeting an update/reply or an item/board using the Platform MCP.
+- [Search (Platform MCP)](https://developer.monday.com/api-reference/docs/mcp-search.md): Searches across monday.com for boards, documents, or folders by keyword, with optional filtering by workspace using the Platform MCP.
+- [Get Assets (Platform MCP)](https://developer.monday.com/api-reference/docs/get-assets.md): Retrieves file metadata for one or more monday.com assets by their IDs, including download URL, thumbnail, size, and uploader information using the Platform MCP.
+- [Get Asset Upload URL (Platform MCP)](https://developer.monday.com/api-reference/docs/get-asset-upload-url.md): Returns a presigned URL to upload a file to monday.com, the first step in attaching a file to an item using the Platform MCP.
+- [Finalize Asset Upload (Platform MCP)](https://developer.monday.com/api-reference/docs/finalize-asset-upload.md): Completes a file upload started with get_asset_upload_url, creates the asset, and attaches it to an item's file column using the Platform MCP.
+- [List Automations (Platform MCP)](https://developer.monday.com/api-reference/docs/list-automations.md): Lists all automations on a specific monday.com board, including their IDs, titles, active state, and configuration, using the Platform MCP.
+- [Manage Automations (Platform MCP)](https://developer.monday.com/api-reference/docs/manage-automations.md): Activates, deactivates, or deletes an existing monday.com automation using the Platform MCP.
+- [Create Automation (Platform MCP)](https://developer.monday.com/api-reference/docs/create-automation.md): Creates an automation on a monday.com board from a structured natural-language description using the Platform MCP.
+- [Plan Workflow (Platform MCP)](https://developer.monday.com/api-reference/docs/plan-workflow.md): Plans one or more monday.com workflows for a described process using an AI agent, returning a structured implementation plan, via the Platform MCP.
+- [Create Workflow (Platform MCP)](https://developer.monday.com/api-reference/docs/create-workflow.md): Creates a new empty workflow in a monday.com workspace using the Platform MCP, returning the workflow object ID and draft ID.
+- [Update Workflow (Platform MCP)](https://developer.monday.com/api-reference/docs/update-workflow.md): Updates an existing workflow draft using an AI agent that interprets a natural-language prompt and applies structural changes, via the Platform MCP.
+- [Publish Workflow (Platform MCP)](https://developer.monday.com/api-reference/docs/publish-workflow.md): Publishes a workflow draft, promoting it to the live version so it starts running, using the Platform MCP.
+- [Manage Agent (Platform MCP)](https://developer.monday.com/api-reference/docs/manage-agent.md): Full lifecycle management for monday platform agents — create, read, update, delete, change state, and run — using the Platform MCP.
+- [Manage Agent Triggers (Platform MCP)](https://developer.monday.com/api-reference/docs/manage-agent-triggers.md): Lists, adds, or removes the triggers attached to a monday platform agent — triggers define when the agent runs automatically — using the Platform MCP.
+- [Manage Agent Skills (Platform MCP)](https://developer.monday.com/api-reference/docs/manage-agent-skills.md): Creates skills in the account catalog and attaches or detaches them from a monday platform agent using the Platform MCP.
+- [Manage Agent Knowledge (Platform MCP)](https://developer.monday.com/api-reference/docs/manage-agent-knowledge.md): Lists, grants, updates, or revokes a monday platform agent's access to boards and docs using the Platform MCP.
+- [Agent Catalog (Platform MCP)](https://developer.monday.com/api-reference/docs/agent-catalog.md): Browses the account-wide catalog of available trigger types and skills for monday platform agents using the Platform MCP.
+- [Get Notetaker Meetings (Platform MCP)](https://developer.monday.com/api-reference/docs/get-notetaker-meetings.md): Retrieves notetaker meetings from the monday.com AI Notetaker, with optional filters for access level, summaries, topics, action items, and transcripts using the Platform MCP.
+- [Get Sprints Boards (Platform MCP)](https://developer.monday.com/api-reference/docs/get-sprints-boards.md): Discovers monday Dev sprint boards and their paired tasks boards in your account using the Platform MCP.
+- [Get Sprints Metadata (Platform MCP)](https://developer.monday.com/api-reference/docs/get-sprints-metadata.md): Returns a table of sprints from a monday Dev sprints board, including timeline, status, and completion data for each sprint using the Platform MCP.
+- [Get Sprint Summary (Platform MCP)](https://developer.monday.com/api-reference/docs/get-sprint-summary.md): Returns a complete AI-generated performance summary and analysis for a completed monday Dev sprint using the Platform MCP.
+- [Execute API Query (Platform MCP)](https://developer.monday.com/api-reference/docs/all-monday-api.md): Executes any monday.com GraphQL query or mutation dynamically. The most flexible tool in the Platform MCP, giving direct access to the full monday.com API surface.
+- [Get GraphQL Schema (Platform MCP)](https://developer.monday.com/api-reference/docs/get-graphql-schema.md): Fetches the monday.com GraphQL schema structure, including all available query fields, mutation fields, and a list of every type in the schema using the Platform MCP.
+- [Get Type Details (Platform MCP)](https://developer.monday.com/api-reference/docs/get-type-details.md): Returns the full field list and type information for a specific GraphQL type in the monday.com API schema using the Platform MCP.
+- [Show Table (Platform MCP UI)](https://developer.monday.com/api-reference/docs/show-table.md): Renders an interactive table visualization of a monday.com board in the chat interface, with optional column-based filtering using the Platform MCP.
+- [Show Chart (Platform MCP UI)](https://developer.monday.com/api-reference/docs/show-chart.md): Renders an interactive pie or bar chart visualization in the chat interface from a set of named data points using the Platform MCP.
+- [Show Battery (Platform MCP UI)](https://developer.monday.com/api-reference/docs/show-battery.md): Renders an interactive battery-style progress indicator in the chat interface, visualizing a status or completion distribution across colored segments using the Platform MCP.
+- [Show Assign (Platform MCP UI)](https://developer.monday.com/api-reference/docs/show-assign.md): Renders an interactive smart assignment interface in the chat, letting users review and confirm task assignments based on item and person details using the Platform MCP.
+- [Platform MCP security](https://developer.monday.com/api-reference/docs/monday-mcp-security-overview.md): Understand the security architecture, controls, and shared responsibilities   of the monday.com MCP Server — including authentication, tenant isolation,   AI-layer risks, and OWASP MCP Top 10 alignment
+- [GraphQL overview](https://developer.monday.com/api-reference/docs/introduction-to-graphql.md)
+- [Making your first request](https://developer.monday.com/api-reference/docs/getting-started.md)
+- [Querying board items](https://developer.monday.com/api-reference/docs/querying-board-items.md): Learn how to query items on a monday.com board using the platform API
+- [Working with multi-level boards](https://developer.monday.com/api-reference/docs/working-with-multi-level-boards.md): A set of best practices for API usage on boards with more than two levels of subitems
+- [Changing column values](https://developer.monday.com/api-reference/docs/change-column-values.md)
+- [Searching across your account](https://developer.monday.com/api-reference/docs/searching-across-your-account.md): Learn how to use the search API to find items, boards, and documents across your monday.com account
+- [Optimizing API usage](https://developer.monday.com/api-reference/docs/optimizing-api-usage.md)
+- [Aggregating Board Data](https://developer.monday.com/api-reference/docs/aggregation-api-guide.md): Learn how to use the aggregate query to calculate summaries, group results, and replace complex item queries with a single API call
+- [Validation Rules](https://developer.monday.com/api-reference/docs/validation-rules-guide.md): Learn how to create, update, and manage validation rules on monday.com boards to enforce data quality through the API
+- [Importing items in bulk](https://developer.monday.com/api-reference/docs/importing-items-in-bulk.md): Learn how to create and update items in bulk via the platform API using ingest_items, backfill_items, and fetch_job_status
+- [Working with the dependency column](https://developer.monday.com/api-reference/docs/working-with-dependency-column.md): Learn how to read, set, and manage item dependencies via the monday.com API, including column configuration and dependency modes.
+- [Build on monday.com with AI](https://developer.monday.com/api-reference/docs/build-on-monday-with-ai.md): Connect AI agents and tools to monday.com through MCP servers, the GraphQL API, and typed SDKs
+- [Build an external agent](https://developer.monday.com/api-reference/docs/build-an-external-agent.md): Create, connect, and host your own external (custom) AI agent on monday.com: webhook setup, signature verification, responding in agent chat, and acting on boards under the agent's identity
+- [Portfolio Agent Skills](https://developer.monday.com/api-reference/docs/portfolio-agent-skills.md): Learn how to use the monday.com Portfolio API with AI agents through ready-to-use multi-step workflows
+- [Skill: Archive / Delete a Project](https://developer.monday.com/api-reference/docs/portfolio-skill-archive-delete-project.md): Learn how to archive or delete project boards and understand the limitations of disconnecting projects from portfolios
+- [Skill: Update Project Status](https://developer.monday.com/api-reference/docs/portfolio-skill-update-project-status.md): Learn how to update a project's health, stage, priority, and timeline using the change_column_value mutation
+- [Skill: List All Projects in a Portfolio](https://developer.monday.com/api-reference/docs/portfolio-skill-list-portfolio-projects.md): Learn how to list projects in a portfolio and resolve each project's tasks board ID
+- [Skill: Get Tasks Assigned to a Person Across Projects](https://developer.monday.com/api-reference/docs/portfolio-skill-get-tasks-by-person.md): Learn how to find all tasks assigned to a specific person across multiple projects in a portfolio
+- [Skill: Get Project Status / Health](https://developer.monday.com/api-reference/docs/portfolio-skill-get-project-status.md): Learn how to read a project's health, stage, priority, and timeline from the portfolio board
+- [Skill: Duplicate a Project](https://developer.monday.com/api-reference/docs/portfolio-skill-duplicate-project.md): Learn how to duplicate a project by identifying its tasks board and using the duplicate_board mutation
+- [Skill: Create a New Portfolio](https://developer.monday.com/api-reference/docs/portfolio-skill-create-portfolio.md): Learn how to create a portfolio board and retrieve its ID, either via an optional callback URL or by polling workspace boards
+- [Skill: Connect a Project to a Portfolio](https://developer.monday.com/api-reference/docs/portfolio-skill-connect-project-to-portfolio.md): Learn how to connect an existing project board to a portfolio board, with optional async callback delivery
+- [Developer/Sandbox Account](https://developer.monday.com/api-reference/docs/developer-sandbox-account.md): Sign up for a free monday.com developer account to build and test apps and API integrations in a sandbox separate from your production data.
+- [The Developer Center](https://developer.monday.com/api-reference/docs/the-developer-center.md): Learn about managing your API usage in the Developer Center
+- [API analytics dashboard](https://developer.monday.com/api-reference/docs/api-analytics.md)
+- [API playground](https://developer.monday.com/api-reference/docs/api-playground.md)
+- [External APIs](https://developer.monday.com/api-reference/docs/external-apis.md)
+- [Developer AI assistant](https://developer.monday.com/api-reference/docs/developer-ai-assistant.md)
+- [Apps MCP](https://developer.monday.com/api-reference/docs/apps-mcp.md): Manage monday.com apps with AI — scaffold features, deploy code, and promote versions through the Apps MCP server
+- [JavaScript SDK](https://developer.monday.com/api-reference/docs/javascript-sdk.md): A comprehensive guide to the monday.com JavaScript/TypeScript SDK for interacting with the GraphQL API.
+- [Python SDK](https://developer.monday.com/api-reference/docs/python-sdk.md): A comprehensive guide to the monday.com Python SDK for interacting with the GraphQL API.
+- [Get help](https://developer.monday.com/api-reference/docs/get-help.md): Learn how to get help through our dedicated support channels
+- [Models API](https://developer.monday.com/api-reference/docs/models-api-overview.md): The monday.com Models API for OpenAI and Anthropic models, with fallbacks, spend tracking, and full OpenAI compatibility.
+- [Getting started with the Models API](https://developer.monday.com/api-reference/docs/getting-started-with-the-models-api.md): Get a monday API token, point your client at the Models API, and call chat, embeddings, images, and audio through the OpenAI-compatible API.
+- [Models API supported models](https://developer.monday.com/api-reference/docs/models-api-supported-models.md): Model IDs available on the Models API for chat, embeddings, image generation, and text-to-speech—grouped by endpoint with their vendor.
+
+## API Reference
+- [About the API Reference](https://developer.monday.com/api-reference/reference/about-the-api-reference.md): A comprehensive reference of all objects, queries, and mutations supported by the platform API
+- [Account](https://developer.monday.com/api-reference/reference/account.md): Learn how to query monday.com accounts using the platform API
+- [Account roles](https://developer.monday.com/api-reference/reference/account-roles.md): Learn how to query an account's user roles using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/account-other-types.md): Learn about other types supported by the account API
+- [Plan](https://developer.monday.com/api-reference/reference/plan.md): Learn how to query an account's monday.com plan data using the platform API
+- [Activity logs](https://developer.monday.com/api-reference/reference/activity-logs-new.md): Query board-scoped and user-scoped activity logs with the GraphQL platform API
+- [AI](https://developer.monday.com/api-reference/reference/ai.md): Learn how to run a prompt against a monday-hosted AI model directly from the platform API using the run_prompt mutation
+- [AI Other Types](https://developer.monday.com/api-reference/reference/ai-other-types.md): Learn more about the input, result, and enum types used when running prompts against AI models via the API
+- [Aggregate](https://developer.monday.com/api-reference/reference/aggregate.md): Learn how to read board data using grouped summaries and aggregation functions using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/aggregate-other-types.md): Learn about other types supported by the aggregate API
+- [Articles](https://developer.monday.com/api-reference/reference/articles.md): Learn how to read, create, publish, and delete knowledge base articles using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/articles-other-types.md): Learn about other types used by the articles and knowledge base APIs
+- [Ask Developer Docs](https://developer.monday.com/api-reference/reference/ask-developer-docs.md): Query monday.com developer documentation with AI to get answers about app development and API usage
+- [Assets (files)](https://developer.monday.com/api-reference/reference/assets-1.md): Learn how to read, add, and upload assets using the monday.com platform API
+- [Audit logs](https://developer.monday.com/api-reference/reference/audit-logs.md): Learn how to query an account's audit logs using the platform API
+- [Audit event catalogue](https://developer.monday.com/api-reference/reference/audit-event-catalogue.md): Learn how to query a catalogue of audit log events using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/audit-logs-other-types.md): Learn about other types supported by the audit logs API
+- [Boards](https://developer.monday.com/api-reference/reference/boards.md): Learn how to read, create, update, and delete boards using the platform API
+- [Board activity logs](https://developer.monday.com/api-reference/reference/activity-logs.md): Query board-scoped activity_logs on the Board type (nested under boards)
+- [Views](https://developer.monday.com/api-reference/reference/board-views.md): Learn how to read, create, update, and delete monday.com board views using the platform API
+- [Get view schema by type](https://developer.monday.com/api-reference/reference/get-view-schema-by-type.md): Learn how to read type-specific board view configuration settings via the API
+- [Other types](https://developer.monday.com/api-reference/reference/board-views-other-types.md): Learn about other types supported by the views APIs
+- [Other types](https://developer.monday.com/api-reference/reference/boards-other-types.md): Learn about other types supported by the boards APIs
+- [Columns](https://developer.monday.com/api-reference/reference/columns.md): Learn how to create, read, update, and delete columns on monday boards using the platform API
+- [Column Types](https://developer.monday.com/api-reference/reference/column-types-reference.md): Browse the full list of monday.com column types, their API support levels, and implementation types for reading and writing column values
+- [AI Column](https://developer.monday.com/api-reference/reference/ai-column.md): Learn how to configure and remove AI automations on monday.com columns using the platform API
+- [Auto Number](https://developer.monday.com/api-reference/reference/auto-number.md): Learn how to create and configure the auto number column using the platform API
+- [Button](https://developer.monday.com/api-reference/reference/button.md): Learn how to create and read the button column using the monday.com platform API
+- [Checkbox](https://developer.monday.com/api-reference/reference/checkbox.md): Learn how to filter, read, update, and clear the checkbox column on monday boards using the platform API
+- [Color Picker](https://developer.monday.com/api-reference/reference/color-picker.md): Learn how to filter by, read, update, and clear the color picker column on monday boards using the platform API
+- [Connect Boards](https://developer.monday.com/api-reference/reference/connect.md): Learn how to filter, read, update, and clear the connect boards column on monday boards using the platform API
+- [Country](https://developer.monday.com/api-reference/reference/country.md): Learn how to filter, read, update, and clear the country column on monday boards using the platform API
+- [Creation Log](https://developer.monday.com/api-reference/reference/creation-log.md): Learn how to read and filter the creation log column on monday boards using the platform API
+- [Date](https://developer.monday.com/api-reference/reference/date.md): Learn how to filter, read, update, and clear the date column on monday boards using the platform API
+- [Dependency](https://developer.monday.com/api-reference/reference/dependency.md): Learn how to filter, read, update, and clear the dependency column on monday boards using the platform API
+- [Dropdown](https://developer.monday.com/api-reference/reference/dropdown.md): Learn how to filter, read, create, update, and clear the dropdown column on monday boards using the platform API
+- [Email](https://developer.monday.com/api-reference/reference/email.md): Learn how to filter, read, update, and clear the email column on monday boards using the platform API
+- [Files (assets)](https://developer.monday.com/api-reference/reference/files-1.md): Learn how to read, update, and clear the files column on monday boards using the platform API
+- [Formula](https://developer.monday.com/api-reference/reference/formula.md): Learn how to read and create the formula column on monday boards using the platform API
+- [Hour](https://developer.monday.com/api-reference/reference/hour.md): Learn how to filter by, read, update, and clear the hour column on monday boards using the platform API
+- [Item ID](https://developer.monday.com/api-reference/reference/item-id.md): Learn how to filter by and read the item ID column on monday boards using the platform API
+- [Last Updated](https://developer.monday.com/api-reference/reference/last-updated.md): Learn how to create, filter by, and read the last updated column on monday boards using the platform API
+- [Link](https://developer.monday.com/api-reference/reference/link.md): Learn how to filter by, read, update, and clear the link column on monday boards using the platform API
+- [Location](https://developer.monday.com/api-reference/reference/location.md): Learn how to filter by, read, update, and clear the location column on monday boards using the platform API
+- [Long Text](https://developer.monday.com/api-reference/reference/long-text.md): Learn how to filter by, read, update, and clear the long text column on monday boards using the platform API
+- [Mirror](https://developer.monday.com/api-reference/reference/mirror.md): Learn how to read and create mirror columns on monday boards using the platform API
+- [Monday doc](https://developer.monday.com/api-reference/reference/document.md): Learn how to read, create, and clear the monday doc column on boards using the platform API
+- [Name (first column)](https://developer.monday.com/api-reference/reference/name.md): Learn how to filter by, read, and update the name column on monday boards using the platform API
+- [Numbers](https://developer.monday.com/api-reference/reference/number.md): Learn how to filter by, read, update, and clear the numbers column on monday boards using the platform API
+- [People](https://developer.monday.com/api-reference/reference/people.md): Learn how to filter by, read, update, and clear the people column on monday boards using the platform API
+- [Phone](https://developer.monday.com/api-reference/reference/phone.md): Learn how to filter by, read, update, and clear the phone column on monday boards using the platform API
+- [Progress Tracking](https://developer.monday.com/api-reference/reference/progress-tracking.md): Learn how to read, filter, and create the progress tracking column on monday boards using the platform API
+- [Rating](https://developer.monday.com/api-reference/reference/rating.md): Learn how to create, filter by, read, update, and clear the rating column on monday boards using the platform API
+- [Status](https://developer.monday.com/api-reference/reference/status.md): Learn how to filter by, read, update, and clear the status column on monday boards using the platform API
+- [Subitems](https://developer.monday.com/api-reference/reference/subitems-column.md): Learn how to read and filter the subitems column on monday boards using the platform API
+- [Tags](https://developer.monday.com/api-reference/reference/tags.md): Learn how to filter by, read, update, and clear the tags column on monday boards using the platform API
+- [Text](https://developer.monday.com/api-reference/reference/text.md): Learn how to filter by, read, update, and clear the text column on monday boards using the platform API
+- [Timeline](https://developer.monday.com/api-reference/reference/timeline.md): Learn how to create, filter by, read, update, and clear the timeline column on monday boards using the platform API
+- [Time Tracking](https://developer.monday.com/api-reference/reference/time-tracking.md): Learn how to read, filter, and create the time tracking column on monday boards using the platform API
+- [Vote](https://developer.monday.com/api-reference/reference/vote.md): Learn how to filter by and read the vote column on monday boards using the platform API
+- [Week](https://developer.monday.com/api-reference/reference/week.md): Learn how to read, filter, update, and clear week columns using the monday.com platform API
+- [World Clock](https://developer.monday.com/api-reference/reference/world-clock.md): Learn how to read, filter, update, and clear world clock columns using the monday.com platform API
+- [Get column type schema](https://developer.monday.com/api-reference/reference/get-column-type-schema.md): Learn how to read type-specific column settings via the API
+- [Other types](https://developer.monday.com/api-reference/reference/columns-other-types.md): Learn about other types supported by the columns APIs
+- [Complexity](https://developer.monday.com/api-reference/reference/complexity.md): Learn how to query the complexity of an API call using the monday.com platform API
+- [Dashboards and widgets](https://developer.monday.com/api-reference/reference/dashboards-and-widgets.md): Learn how to create, update, and delete dashboards and widgets using the platform API
+- [All widgets schema](https://developer.monday.com/api-reference/reference/all-widgets-schema.md): Learn how to read type-specific widget configuration settings via the API
+- [Other types](https://developer.monday.com/api-reference/reference/dashboards-and-widgets-other-types.md): Learn about other types supported by the dashboards and widgets APIs
+- [Departments](https://developer.monday.com/api-reference/reference/departments.md): Learn how to read, create, update, and delete departments using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/department-other-types.md)
+- [Docs](https://developer.monday.com/api-reference/reference/docs.md): Learn how to read, create, update, and delete monday docs using the platform API
+- [Blocks](https://developer.monday.com/api-reference/reference/blocks.md): Learn how to read, create, update, and delete doc blocks inside of monday docs using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/doc-blocks-other-types.md): Learn about other types supported by the blocks APIs
+- [Export markdown from doc](https://developer.monday.com/api-reference/reference/export-markdown-from-doc.md): Learn how to export markdown from a monday doc using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/docs-other-types.md): Learn about other types supported by the docs APIs
+- [Favorites](https://developer.monday.com/api-reference/reference/favorites.md): Learn how to read, create, update, and delete favorites using the platform API
+- [Other Types](https://developer.monday.com/api-reference/reference/favorites-other-types.md): Learn about the other types used when reading, creating, updating, and deleting favorites via the API
+- [Folders](https://developer.monday.com/api-reference/reference/folders.md): Learn how to read, create, update, and delete folders using the monday.com platform API
+- [Form](https://developer.monday.com/api-reference/reference/form.md): Learn how to read, create, update, and delete monday.com Workforms via the platform API
+- [Other Types](https://developer.monday.com/api-reference/reference/forms-other-types.md): Learn more about the other types used when reading, creating, updating, and deleting forms via the API
+- [Groups](https://developer.monday.com/api-reference/reference/groups.md): Learn how to read, create, update, and delete groups from monday boards using the platform API
+- [Items](https://developer.monday.com/api-reference/reference/items.md): Learn how to read, create, update, and delete items from monday boards using the platform API
+- [Column values](https://developer.monday.com/api-reference/reference/column-values-v2.md): Learn how to read column values on monday boards using the platform API
+- [Other Types](https://developer.monday.com/api-reference/reference/items-other-types.md): Learn more about the other types used when reading, creating, updating, and deleting items via the API
+- [Items page](https://developer.monday.com/api-reference/reference/items-page.md): Learn how to filter monday board data using the platform API
+- [Next items page](https://developer.monday.com/api-reference/reference/next-items-page.md): Learn how to paginate through large sets of items using the platform API
+- [Other Types](https://developer.monday.com/api-reference/reference/items-page-other-types.md): Learn about the other types used reading filtered items data using the platform API
+- [Items page by column values](https://developer.monday.com/api-reference/reference/items-page-by-column-values.md): Learn how to read items on monday boards based on predefined column values using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/items-page-by-column-values-other-types.md): Learn about other types supported by the items page by column values API
+- [Managed columns](https://developer.monday.com/api-reference/reference/managed-columns.md): Learn how to read, create, update, and delete managed columns using the platform API
+- [Other Types](https://developer.monday.com/api-reference/reference/managed-columns-other-types.md)
+- [Me](https://developer.monday.com/api-reference/reference/me.md): Learn how to use API tokens to read user data through the platform API
+- [Notetaker](https://developer.monday.com/api-reference/reference/notetaker.md): Learn how to query meetings and recordings using the notetaker API
+- [Notifications](https://developer.monday.com/api-reference/reference/notification.md): Learn how to create and read notifications on monday.com using the platform API
+- [Mute board settings](https://developer.monday.com/api-reference/reference/mute-board-settings.md): Learn how to read a board’s muted notification settings via the platform API
+- [Notifications settings](https://developer.monday.com/api-reference/reference/notifications-settings.md): Learn how to read monday.com notifications settings via the platform API
+- [Other Types](https://developer.monday.com/api-reference/reference/notification-settings-other-types.md): Learn more about the other types used when reading notifications settings via the API
+- [Other Types](https://developer.monday.com/api-reference/reference/notifications-other-types.md): Learn more about the other types used when reading and creating notifications and their settings via the API
+- [Object Relations](https://developer.monday.com/api-reference/reference/object-relations.md): Learn how to create, read, and delete relations between objects using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/object-relations-other-types.md): Learn about other types used by the object relations API
+- [Object Schemas](https://developer.monday.com/api-reference/reference/object-schemas.md): Learn how to read, create, update, and delete object schemas, manage their columns, and connect boards using the platform API
+- [Object Schemas Other Types](https://developer.monday.com/api-reference/reference/object-schemas-other-types.md): Learn more about the other types used when reading, creating, updating, and deleting object schemas via the API
+- [Objects](https://developer.monday.com/api-reference/reference/objects.md): Learn how to create, read, update, and delete objects using the platform API
+- [Object types unique keys](https://developer.monday.com/api-reference/reference/object-types-unique-keys.md): Learn how to read object types using the platform API
+- [Platform API](https://developer.monday.com/api-reference/reference/platform-api.md): Learn how to query an account's platform API daily usage
+- [Other Types](https://developer.monday.com/api-reference/reference/platform-api-other-types.md): Learn about other types used while reading an account's API consumption data
+- [Portfolio](https://developer.monday.com/api-reference/reference/portfolio.md): Learn how to create and update portfolio solutions boards using the platform API
+- [Other Types](https://developer.monday.com/api-reference/reference/portfolio-other-types.md)
+- [Replies](https://developer.monday.com/api-reference/reference/replies.md): Learn how to read replies to monday.com updates using the platform API
+- [Resource Directory](https://developer.monday.com/api-reference/reference/resource-directory.md): Learn how to read and update resource directories via the platform API
+- [Other Types](https://developer.monday.com/api-reference/reference/resource-directory-other-types.md): Learn about additional types used while reading and updating resource directories via the API
+- [Search](https://developer.monday.com/api-reference/reference/search.md): Learn how to search for items, boards, documents, users, workspaces, updates, and timeline items across your account using the platform API
+- [Other Types](https://developer.monday.com/api-reference/reference/search-other-types.md): Learn more about the other types used when searching for items, boards, documents, users, workspaces, updates, and timeline items via the API
+- [Sequences](https://developer.monday.com/api-reference/reference/sequences.md): Learn how to list email sequences available for enrollment and enroll board items into multi-step email outreach workflows using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/sequences-other-types.md): Learn about other types supported by the sequences API
+- [Subitems](https://developer.monday.com/api-reference/reference/subitems.md): Learn how to query subitems on monday boards using the platform API
+- [Tags](https://developer.monday.com/api-reference/reference/tags-1.md): Learn how to query monday account tags using the platform API
+- [Teams](https://developer.monday.com/api-reference/reference/teams.md): Learn how to query monday team data using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/teams-other-types.md): Learn about other types supported by the teams APIs
+- [Templates](https://developer.monday.com/api-reference/reference/templates.md): Learn how to install a template as a background job and poll its installation status using the platform API
+- [Templates Other Types](https://developer.monday.com/api-reference/reference/templates-other-types.md): Learn more about the other types used when installing templates and polling installation status via the API
+- [Updates](https://developer.monday.com/api-reference/reference/updates.md): Learn how to query monday.com board or item updates using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/updates-other-types.md): Learn about other types supported by the updates APIs
+- [Viewers](https://developer.monday.com/api-reference/reference/viewers.md): Learn how to query an update's viewers using the platform API
+- [Users](https://developer.monday.com/api-reference/reference/users.md): Learn how to read, add, and delete monday users via the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/users-other-types.md): Learn about other types supported by the users APIs
+- [Validations](https://developer.monday.com/api-reference/reference/validations.md): Learn how to read, create, update, and delete validation rules and required field columns using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/validations-other-types.md): Learn about other types supported by the validations APIs
+- [Version](https://developer.monday.com/api-reference/reference/version.md): Learn how to read which API version was used while making a call via the monday.com platform API
+- [Versions](https://developer.monday.com/api-reference/reference/versions.md): Learn how to access all supported API versions using the monday.com platform API
+- [Webhooks](https://developer.monday.com/api-reference/reference/webhooks.md): Learn how to read and update webhooks using the monday.com platform API, verify webhook URLs, and retry policies
+- [Workspaces](https://developer.monday.com/api-reference/reference/workspaces.md): Learn how to query and update monday workspaces using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/workspaces-other-types.md): Learn about other types supported by the workspaces APIs
+- [Bulk Import](https://developer.monday.com/api-reference/reference/bulk-import.md): Overview of the two bulk item import mutations - ingest_items and backfill_items - and how to choose between them
+- [Ingest Items](https://developer.monday.com/api-reference/reference/ingest-items-api-reference.md): Learn how to bulk-create and update items via the platform API using the default ingest_items mutation
+- [Backfill Items](https://developer.monday.com/api-reference/reference/backfill-items-api-reference.md): Learn how to perform one-time, admin-only bulk loads of items via the platform API using the backfill_items mutation
+- [Bulk Import Other Types](https://developer.monday.com/api-reference/reference/bulk-import-other-types.md): Learn about the input objects, result types, and enums used by the bulk import items API
+- [App](https://developer.monday.com/api-reference/reference/app.md): Learn how to query apps built with the monday.com apps framework
+- [Features](https://developer.monday.com/api-reference/reference/app-features.md): Learn how to read, create, update, and delete app features using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/features-other-types.md): Learn about other types supported by the features APIs
+- [Other types](https://developer.monday.com/api-reference/reference/app-other-types.md): Learn about other types supported by the app APIs
+- [App installs](https://developer.monday.com/api-reference/reference/app-installs.md): Learn how to query app installation data using the monday.com platform API
+- [Other types](https://developer.monday.com/api-reference/reference/app-installs-other-types.md): Learn about other types supported by the app installs API
+- [Get app lifecycle subscriptions](https://developer.monday.com/api-reference/reference/get-app-lifecycle-subscriptions.md): Learn how to read, update, and delete app feature-level lifecycle event subscriptions via the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/app-lifecycle-subscriptions-other-types.md): Learn about other types supported by the get app lifecycle subscriptions API
+- [App subscription](https://developer.monday.com/api-reference/reference/app-subscription.md): Learn how to query app subscription data using the monday.com platform API
+- [App subscriptions](https://developer.monday.com/api-reference/reference/app-subscriptions.md): Learn how to query app subscription data using the monday.com platform API
+- [Other types](https://developer.monday.com/api-reference/reference/app-subscriptions-other-types.md): Learn about other types supported by the app subscriptions API
+- [App subscription operations](https://developer.monday.com/api-reference/reference/app-subscription-operations.md)
+- [Apps monetization info](https://developer.monday.com/api-reference/reference/apps-monetization-info.md): Learn how to retrieve an account's seat count data using the platform API
+- [Apps monetization status](https://developer.monday.com/api-reference/reference/apps-monetization-status.md): Learn how to query an account's app monetization status using the monday.com platform API
+- [Batch extend trial period](https://developer.monday.com/api-reference/reference/batch-extend-trial-period.md)
+- [Other types](https://developer.monday.com/api-reference/reference/batch-extend-trial-period-other-types.md): Learn about other types supported by the batch extend trial period API
+- [Marketplace app discounts](https://developer.monday.com/api-reference/reference/marketplace-app-discounts.md)
+- [Other types](https://developer.monday.com/api-reference/reference/marketplace-app-discounts-other-types.md): Learn about other types supported by the marketplace app discount APIs
+- [Custom activity](https://developer.monday.com/api-reference/reference/custom-activity.md): Learn how to read, create, and custom activities from the Email & Activities app using the platform API
+- [Timeline](https://developer.monday.com/api-reference/reference/timeline-ea.md): Learn how to read an item's Email & Activities timeline using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/timeline-other-types.md): Learn about other types supported by the timeline API
+- [Timeline item](https://developer.monday.com/api-reference/reference/timeline-item-ea.md): Learn how to read, create, and delete timeline items from the Email & Activities app using the platform API
+- [Other types](https://developer.monday.com/api-reference/reference/timeline-item-other-types.md): Learn about other types supported by the timeline item APIs
+
+## Changelog
+- [Consume AI models through monday](https://developer.monday.com/api-reference/changelog/consume-ai-models-through-monday.md)
+- [New monday Platform MCP tools](https://developer.monday.com/api-reference/changelog/new-monday-platform-mcp-tools.md)
+- [Major user entity update](https://developer.monday.com/api-reference/changelog/major-user-entity-update.md)
+- [New user activity logs](https://developer.monday.com/api-reference/changelog/new-user-activity-logs.md)
+- [New APIs to manage object relations](https://developer.monday.com/api-reference/changelog/new-apis-to-manage-object-relations.md)
+- [New notetaker meetings API](https://developer.monday.com/api-reference/changelog/new-notetaker-meetings-api.md)
+- [New `knowledge_base_search` query](https://developer.monday.com/api-reference/changelog/new-knowledge_base_search-query.md)
+- [New APIs to manage email sequences](https://developer.monday.com/api-reference/changelog/new-apis-to-manage-email-sequences.md)
+- [New document version history APIs](https://developer.monday.com/api-reference/changelog/new-document-version-history-apis.md)
+- [New dashboard widget types: `APP_FEATURE` and `LISTVIEW`](https://developer.monday.com/api-reference/changelog/new-dashboard-widget-types-app_feature-and-listview.md)
