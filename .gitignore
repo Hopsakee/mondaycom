@@ -150,3 +150,6 @@ checklink/cookies.txt
 
 # Quarto
 .quarto
+
+# FastHTML session signing key, generated on first run of `monday web`.
+.sesskey
