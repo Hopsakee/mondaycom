@@ -16,7 +16,7 @@ the burndown, the epics overview and the IV Portfolio followed, and
 - **Every tool is a `monday` subcommand.** Add it in `cli.py`, keep the logic in
   its own module, print plain text to stdout so it pipes.
 - **The web UI is FastHTML + HTMX, server-rendered.** It lives in `web.py` and
-  reuses `sprint.py`, `burndown.py`, `epics.py` and `portfolio.py`; it is a second
+  reuses `sprint.py`, `burndown.py`, `epics.py`, `portfolio.py` and `planning.py`; it is a second
   front-end, never a second implementation. No React, Vue, or Svelte — FastHTML is not
   compatible with them.
 - Dutch column titles and task names are normal here; keep them as-is.
@@ -38,10 +38,12 @@ uv run monday epic-progress --stuck  # only the blocked ones, with links to the 
 uv run monday portfolio              # IV Portfolio items, epics and points rolled up per item
 uv run monday portfolio --item "EBO EIS"   # one item: its fields and every epic under it
 uv run monday portfolio --stuck --empty    # only blocked items / also the ones with no epics
+uv run monday planning              # load per discipline vs capacity, which epics fit the quarter
+uv run monday planning --layer all --end 2027-03-31   # every layer, to another quarter end
 uv run monday project DPR-223        # write an Obsidian project note for one epic
 uv run monday project 223 --stdout   # same epic, printed instead of written
 uv run monday project 2617136005 --out . --force   # by item id, into this directory
-uv run monday columns --board epic   # discover column ids (sprint|done|epic|portfolio)
+uv run monday columns --board epic   # column ids (sprint|done|epic|portfolio|distribution|capacity)
 ./scripts/sprint-tasks.sh --copy     # same, plus clipboard
 uv run poe check                     # ruff format --diff, ruff check, mypy
 uv run poe test                      # pytest
@@ -66,11 +68,12 @@ overrides where `monday project` writes.
 | `src/mondaycom/burndown.py` | Sprint-group points, done dates, ideal vs actual, the person/DAM filters |
 | `src/mondaycom/epics.py` | Epic rows, per-epic STP totals, **impediments**, the overview's filters and sorting |
 | `src/mondaycom/portfolio.py` | IV Portfolio items, the epics grouped under them, their filters and sorting |
+| `src/mondaycom/planning.py` | Distribution splits, capacity, layers, the queue and its forecast |
 | `src/mondaycom/project.py` | One epic → an Obsidian project note: reference parsing, the template |
 | `src/mondaycom/sorting.py` | The one-string sort spec both tables share (`Sorting`, `label_key`) |
 | `src/mondaycom/chart.py` | The burndown SVG, the palette and tone tokens, status/priority tags, avatars, the battery meter, the table view |
 | `src/mondaycom/cli.py` | `monday` argparse entry point |
-| `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Epics and Portfolio pages, FT components, caches |
+| `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Epics, Portfolio and Planning pages, FT components, caches |
 | `scripts/` | Bash wrappers so tools run from anywhere |
 | `docs/Project.md` | The vault's project template, as Templater writes it — `project.py` renders it |
 | `docs/monday-api/` | **Offline mirror of the monday.com API docs — read this first** |
@@ -115,7 +118,8 @@ The things that cost time here:
   `"false"` for a boolean. Readable, but the epic board's DAM formula is just
   `IF({Portfolio#Count} > 0, …)`, so we read the link and skip the indirection.
 - Discover column ids for a board with `uv run monday columns --board sprint`
-  rather than guessing. `--board` takes `sprint`, `done`, `epic` or `portfolio`.
+  rather than guessing. `--board` takes `sprint`, `done`, `epic`, `portfolio`,
+  `distribution` or `capacity`.
 
 ## FastHTML — what bites you
 
@@ -410,6 +414,44 @@ formula. Today that splits the board 42 / 233.
 - Both pages defer their table to an `hx_trigger="load"` request behind a spinner,
   because a cold cache means reading the epic board and both sprint boards.
 
+## Planning page
+
+`monday planning` and `/planning` answer "how much work does each discipline have, how
+much can it do, and which epics does that let us finish?". Every rule below was agreed
+with Jelle on 2026-09-28; ask before changing one.
+
+- **Two boards of its own.** Epics-STP-distribution (`5105081537`): one row per epic,
+  linked by `board_relation_mm7m2g0t`, with STP-TODO (`lookup_mm7m50j4`, a mirror of the
+  epic board's "STP gepland") and a percentage per discipline — DE, DB, DS, PO/AT.
+  Capaciteit (`5105095781`): one row per person with role, STP per sprint, "% beschikbaar
+  komende sprint", "Beschikbaar komend kwartaal" and "Overhead", all percentages.
+- **monday.com is the truth; do not fix data in code.** STP-TODO is read as the board
+  computes it — summing its comma-joined members is *reading* the mirror, not
+  recalculating it. It includes Done tasks still on the active board and the Dummy
+  stories; that is deliberate, do not "correct" it. **Only a linked row counts**: no
+  name matching, no default split. An unlinked epic, or one whose split is blank or does
+  not add up to 100%, is left out of every number and listed with a link to fix it.
+  An empty STP-TODO reads "no STP-TODO", never "nothing left".
+- **Layers come from the epic board's group, not the distribution board's.** Promised is
+  Actief/Bespreken due on or before the quarter end (or undated); Later is those groups
+  due after it; Backlog is Backlog, *whatever its due date*. Afgerond is not planned.
+- **One queue**: Promised → Later → Backlog, then priority, due date, smallest first.
+  Showing Backlog alone still queues it behind the rest ("could we also do these?"),
+  so a discipline's *Queued* is the layers shown plus every layer ahead of them.
+- **Strict per discipline.** Each works down the queue on its own; an epic finishes in
+  the sprint its slowest share does (`planning.forecast`). A discipline with work and
+  nobody to do it is "no capacity", never a division by zero.
+- **Capacity** per person per sprint is `STP × available% × (1 − overhead%)`. The plan
+  uses the quarter availability for every sprint; the sprint availability feeds only the
+  Next sprint check, which weighs the "Next sprint" group's open tasks by their epic split.
+- **Whole sprints only.** The window starts the day after the current sprint (the
+  Sprint page's guess) and ends on the last day of the quarter the *first sprint ends
+  in* — on 28 September that plans Q4, not the two days left of Q3. Both are settable.
+- The web page caches one `planning.Snapshot` in `web._PLANNING` (~8s cold) and re-plans
+  it per request. The load meter is `chart.load_meter`: the battery's track on a fixed
+  0–150% scale, a tick at capacity, the overflow in the critical tone and "overbooked"
+  in words.
+
 ## Project notes
 
 `monday project <ref>` turns one epic into an Obsidian project note, rendering
@@ -542,7 +584,7 @@ Obsidian Tasks plugin syntax, pasted into the vault:
   never by the tick — every task stays selectable whether it is finished or not.
 - **The nav marks the current page** with `aria-current="page"`, matched on the page
   title, so `page(title, …)` must be called with the nav label (`Sprint`, `Epics`,
-  `Portfolio`). One portfolio item's page is titled `Portfolio` too, and puts the item's
+  `Portfolio`, `Planning`). One portfolio item's page is titled `Portfolio` too, and puts the item's
   own name in an `H2` inside the swapped partial — which is also the only place it is
   known before the boards are read.
 - **The Sprint page's date field shows the window it settled on**, not a blank: the page
@@ -580,6 +622,10 @@ Obsidian Tasks plugin syntax, pasted into the vault:
   Two true numbers, one line apart — watch that it stays legible if more totals arrive.
 - `epic-progress` reads both sprint boards end to end every time it runs (~19s). The
   web UI caches it; the CLI cannot. A points-per-epic cache on disk would fix that.
+- The planning forecasts from the start of the *next* sprint, but STP-TODO still holds
+  the current sprint's open work, so it overstates demand by whatever is left of the
+  current sprint. Capaciteit's `Person` column is empty, so capacity cannot yet be
+  checked against who actually is Trekker.
 - "Sprint bord, afgevallen" (`1715341388`) is a third task board nothing reads yet.
   Its points are in no total, done or remaining.
 - `web._DAM_EPICS` re-reads the epic board on its own, even when `_EPICS` already holds

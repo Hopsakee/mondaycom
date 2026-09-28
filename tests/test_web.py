@@ -14,10 +14,11 @@ from starlette.testclient import TestClient
 
 from mondaycom import burndown as bd
 from mondaycom import epics as ep
+from mondaycom import planning as pl
 from mondaycom import portfolio as pf
 from mondaycom import web
 from mondaycom.client import MondayError
-from mondaycom.config import ASSIGNED_TO_ME, DAM, ME, NON_DAM
+from mondaycom.config import ASSIGNED_TO_ME, DAM, EPIC_GROUP_ACTIVE, EPIC_GROUP_BACKLOG, ME, NON_DAM
 from mondaycom.lookups import Choice
 
 HTMX = {"HX-Request": "1"}
@@ -923,3 +924,92 @@ def test_closing_the_live_reload_socket_is_not_an_asgi_error(client: TestClient)
     """fasthtml's own handler receives once past the disconnect and raises RuntimeError."""
     with client.websocket_connect("/live-reload"):
         pass
+
+
+# --- the planning page ------------------------------------------------------------------
+
+PLAN = pl.Snapshot(
+    splits=[
+        pl.Split(
+            id="s1",
+            name="Waterbalans",
+            epic_id="e1",
+            todo=40,
+            has_todo=True,
+            shares={"DE": 100.0, "DB": None, "DS": None, "PO/AT": None},
+        ),
+        pl.Split(
+            id="s2",
+            name="Backlogding",
+            epic_id="e2",
+            todo=10,
+            has_todo=True,
+            shares={"DE": 50.0, "DB": 50.0, "DS": None, "PO/AT": None},
+        ),
+    ],
+    epics=[
+        pl.PlanEpic(id="e1", name="Waterbalans", group=EPIC_GROUP_ACTIVE, status="Working on it", priority="High"),
+        pl.PlanEpic(id="e2", name="Backlogding", group=EPIC_GROUP_BACKLOG, priority="Low"),
+        pl.PlanEpic(id="e3", name="Nog niet gekoppeld", group=EPIC_GROUP_ACTIVE, priority="High"),
+    ],
+    people=[
+        pl.Person(name="Agnes", role="DE", stp=10, sprint_available=100, quarter_available=100),
+        pl.Person(name="Andor", role="DB", stp=10, sprint_available=100, quarter_available=100),
+    ],
+    current_end=date(2026, 10, 4),
+)
+
+
+@pytest.fixture
+def planned(client: TestClient) -> Iterator[TestClient]:
+    web._PLANNING[:] = [PLAN]
+    yield client
+    web._PLANNING.clear()
+
+
+def test_planning_page_defers_its_numbers_to_a_load_request(planned: TestClient) -> None:
+    html = planned.get("/planning").text
+    assert 'aria-current="page"' in html and ">Planning<" in html
+    assert 'hx-trigger="load"' in html
+    assert "/planning_view" in html
+
+
+def test_planning_view_shows_disciplines_queue_and_what_is_left_out(planned: TestClient) -> None:
+    html = planned.get("/planning_view", params={"start": "2026-10-05", "end": "2026-11-18"}, headers=HTMX).text
+    assert 'id="planning"' in html
+    # 40 DE points against 10 per sprint over two sprints: 200%, overbooked, said in words.
+    assert "200% · overbooked" in html
+    assert "Waterbalans" in html
+    # Backlog is not shown by default, and the unlinked epic is reported with its fix.
+    assert "Backlogding" not in html
+    assert "Nog niet gekoppeld" in html and "not linked on Epics-STP-distribution" in html
+    # The dates come back out of band, so the fields show the window in use.
+    assert 'id="planning-dates"' in html and 'hx-swap-oob="true"' in html
+
+
+def test_planning_view_layers_are_checkboxes(planned: TestClient) -> None:
+    html = planned.get(
+        "/planning_view", params={"start": "2026-10-05", "end": "2026-11-18", "layer": ["backlog"]}, headers=HTMX
+    ).text
+    assert "Backlogding" in html
+    assert "Waterbalans" not in html.split("Epics</h3>")[1].split("Next sprint")[0]
+
+
+def test_planning_view_defaults_the_window_from_the_current_sprint(planned: TestClient) -> None:
+    html = planned.get("/planning_view", headers=HTMX).text
+    assert 'value="2026-10-05"' in html and 'value="2026-12-31"' in html
+
+
+def test_planning_view_reports_a_bad_date(planned: TestClient) -> None:
+    html = planned.get("/planning_view", params={"end": "2026-01-01", "start": "2026-10-05"}, headers=HTMX).text
+    assert "before the start" in html
+
+
+def test_planning_view_reports_a_failed_fetch(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(client: Any) -> pl.Snapshot:
+        raise MondayError("complexity budget exhausted")
+
+    monkeypatch.setattr(pl, "fetch", boom)
+    web._PLANNING.clear()
+    html = client.get("/planning_view", headers=HTMX).text
+    assert "complexity budget exhausted" in html

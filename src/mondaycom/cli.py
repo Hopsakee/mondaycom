@@ -15,7 +15,7 @@ from typing import Any
 
 from mondaycom import burndown as bd
 from mondaycom import epics as ep
-from mondaycom import lookups, portfolio, project, queries, sprint
+from mondaycom import lookups, planning, portfolio, project, queries, sprint
 from mondaycom.client import MondayClient, MondayError
 from mondaycom.config import ASSIGNED_TO_ME, BOARDS, DAM, ME, NON_DAM, OBSIDIAN_PROJECTS_DIR, OPEN_STATUSES
 from mondaycom.lookups import Choice
@@ -287,6 +287,76 @@ def cmd_portfolio(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sprints(value: float | None) -> str:
+    """Sprints needed, to one decimal; nobody to do the work is said in words."""
+    return "nobody" if value is None else f"{value:.1f}"
+
+
+def _load(value: float | None) -> str:
+    return "—" if value is None else f"{value * 100:.0f}%"
+
+
+def cmd_planning(args: argparse.Namespace) -> int:
+    """Print the plan: load per discipline, the epic queue with forecasts, and the gaps."""
+    layers = planning.parse_layers(list(planning.LAYERS) if "all" in (args.layer or []) else args.layer)
+    with MondayClient() as client:
+        snapshot = planning.fetch(client)
+    window = planning.window(snapshot.current_end, start=args.start or "", end=args.end or "")
+    plan = planning.plan(snapshot, window)
+    sprints = window.sprints
+
+    print(
+        f"Planning {window.start} – {window.end} · {sprints} whole sprints"
+        + (f" (to {window.last_day})" if sprints else "")
+        + f" · {' + '.join(planning.LAYERS[layer] for layer in layers).lower()}"
+    )
+    print()
+    heads = "".join(f"{planning.LAYERS[layer].lower():>9}" for layer in planning.LAYERS)
+    print(f"{'discipline':<22} {'people':>6} {'STP/spr':>8} {'capacity':>9}{heads}", end="")
+    print(f" {'queued':>8} {'sprints':>8} {'load':>6}")
+    for d in planning.most_overbooked(plan, layers):
+        demand = "".join(f"{bd.fmt(round(d.demand.get(layer, 0.0), 1)):>9}" for layer in planning.LAYERS)
+        print(
+            f"{d.key + ' ' + d.name:<22.22} {len(d.people):>6} {d.per_sprint:>8.1f} {d.per_sprint * sprints:>9.1f}"
+            f"{demand} {d.through(layers):>8.1f} {_sprints(d.sprints_needed(layers)):>8} "
+            f"{_load(d.load(layers, sprints)):>6}"
+        )
+    print("queued = the layers shown plus every layer ahead of them in the queue")
+
+    shown = plan.shown(layers)
+    print()
+    print(f"{'layer':<9} {'priority':<10} {'due':<10} {'todo':>6}  {'finish':<10}  {'forecast':<17} epic")
+    for p in shown:
+        verdict, _ = p.verdict(window)
+        print(
+            f"{p.layer:<9} {p.epic.priority[:9]:<10} {str(p.epic.due or ''):<10} {bd.fmt(p.todo):>6}  "
+            f"{str(p.finish or ''):<10}  {verdict:<17} {p.epic.name}"
+        )
+    fitting = sum(1 for p in shown if p.fits(window) and p.split.has_todo)
+    late = sum(1 for p in shown if p.late)
+    print()
+    print(f"{fitting} of {len(shown)} epics finish within the {sprints} sprints · {late} late against their due date")
+
+    nxt = plan.next_sprint
+    print()
+    print(f"Next sprint group: {nxt.tasks} open tasks")
+    for key in planning.DISCIPLINES:
+        load = nxt.load[key] / nxt.capacity[key] if nxt.capacity[key] else None
+        print(f"  {key:<6} {nxt.load[key]:>6.1f} planned of {nxt.capacity[key]:>5.1f} capacity  ({_load(load)})")
+    if nxt.unplaced:
+        print(f"  {bd.fmt(nxt.unplaced)} points sit on tasks whose epic has no usable split, so no discipline")
+
+    for person in plan.unassigned_people:
+        print(f"note: {person.name} on Capaciteit has role {person.role or '(none)'!r}, which is no discipline")
+    problems = [pr for pr in plan.problems if pr.layer in layers]
+    if problems:
+        print()
+        print(f"{len(problems)} epics are left out — fix them on monday.com:")
+        for pr in problems:
+            print(f"  {pr.layer:<9} {pr.reason:<38} {pr.epic.name} — {pr.url}")
+    return 0
+
+
 def cmd_project(args: argparse.Namespace) -> int:
     """Write an Obsidian project note for one epic, or print it."""
     ref = project.parse_reference(args.reference)
@@ -420,6 +490,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="also show items with no epic linked (166 of 177 today, so hidden by default)",
     )
     p.set_defaults(func=cmd_portfolio)
+
+    p = subs.add_parser("planning", help="workload per discipline against capacity, and which epics fit the quarter")
+    p.add_argument("--start", help="first day to plan, YYYY-MM-DD (default: the day after the current sprint)")
+    p.add_argument("--end", help="quarter end, YYYY-MM-DD (default: end of the quarter the first sprint ends in)")
+    p.add_argument(
+        "--layer",
+        action="append",
+        choices=[*planning.LAYERS, "all"],
+        help="which epics to show: promised (default), later, backlog, or all; repeatable. "
+        "Capacity always goes to the layers ahead first",
+    )
+    p.set_defaults(func=cmd_planning)
 
     p = subs.add_parser("project", help="write an Obsidian project note for one epic")
     p.add_argument(

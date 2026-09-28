@@ -13,7 +13,10 @@ from textwrap import dedent
 
 from mondaycom.config import (
     ASSIGNED_TO_ME,
+    CAPACITY_BOARD,
     CURRENT_SPRINT_GROUP,
+    DISCIPLINES,
+    DISTRIBUTION_BOARD,
     EPIC_BOARD,
     PORTFOLIO_BOARD,
     SPRINT_BOARD,
@@ -312,6 +315,90 @@ def board_tasks(board: Board = SPRINT_BOARD, cursor: str | None = None) -> str:
                             ... on BoardRelationValue {{
                                 linked_item_ids
                             }}
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    """).strip()
+
+
+def distribution_rows(board: Board = DISTRIBUTION_BOARD, cursor: str | None = None) -> str:
+    """Every row of the planning board: its epic link, STP-TODO and the four percentages.
+
+    STP-TODO is a mirror, so it needs `... on MirrorValue` for its `display_value` — and
+    that value is the mirror's members, comma-joined, not the sum the UI shows.
+    """
+    columns = json.dumps([board.column(a) for a in ("epic", "todo", *DISCIPLINES)])
+    return dedent(f"""
+        query {{
+            boards(ids: [{board.id}]) {{
+                items_page({_page_args(cursor)}) {{
+                    cursor
+                    items {{
+                        id
+                        name
+                        column_values(ids: {columns}) {{
+                            id
+                            text
+                            ... on MirrorValue {{
+                                display_value
+                            }}
+                            ... on BoardRelationValue {{
+                                display_value
+                                linked_item_ids
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    """).strip()
+
+
+def capacity_rows(board: Board = CAPACITY_BOARD) -> str:
+    """Every person on the capacity board: role, STP per sprint, availability, overhead."""
+    columns = json.dumps(
+        [board.column(a) for a in ("role", "stp", "sprint_available", "quarter_available", "overhead")]
+    )
+    return dedent(f"""
+        query {{
+            boards(ids: [{board.id}]) {{
+                items_page(limit: {PAGE_LIMIT}) {{
+                    cursor
+                    items {{
+                        id
+                        name
+                        column_values(ids: {columns}) {{
+                            id
+                            text
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    """).strip()
+
+
+def planning_epics(board: Board = EPIC_BOARD, cursor: str | None = None) -> str:
+    """Every epic with what the planning needs: its group, status, priority and due date.
+
+    The group is the planning layer (Actief / Bespreken / Backlog), which is why this is
+    not `epic_rows`: the overview pages have no use for it.
+    """
+    columns = json.dumps([board.column(a) for a in ("status", "priority", "due_date")])
+    return dedent(f"""
+        query {{
+            boards(ids: [{board.id}]) {{
+                items_page({_page_args(cursor)}) {{
+                    cursor
+                    items {{
+                        id
+                        name
+                        group {{ id title }}
+                        column_values(ids: {columns}) {{
+                            id
+                            text
                         }}
                     }}
                 }}

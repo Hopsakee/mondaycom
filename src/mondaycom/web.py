@@ -35,6 +35,7 @@ from fasthtml.common import (
     Form,
     Input,
     Label,
+    Legend,
     Li,
     Nav,
     Option,
@@ -60,7 +61,7 @@ from fasthtml.pico import Group  # Pico-only layout helpers are not re-exported 
 from starlette.websockets import WebSocketDisconnect
 
 from mondaycom import burndown as bd
-from mondaycom import chart, epics, lookups, portfolio, sprint
+from mondaycom import chart, epics, lookups, planning, portfolio, sprint
 from mondaycom.client import MondayClient, MondayError
 from mondaycom.config import ASSIGNED_TO_ME, DAM, DONE_STATUS, ME, NON_DAM, OPEN_STATUSES
 from mondaycom.epics import Epic
@@ -87,6 +88,10 @@ _PORTFOLIO: list[PortfolioItem] = []
 # Epic ids carrying a portfolio link, for the DAM filter. One epic-board read; only
 # fetched when something actually filters on it.
 _DAM_EPICS: set[str] = set()
+
+# The three planning boards and the two sprint groups, read once (~8s). Every date and
+# layer a user tries is a re-plan of this, not another read; "Refresh" re-reads it.
+_PLANNING: list[planning.Snapshot] = []
 
 # Sentinels for the two "do not filter" dropdown options.
 EVERYONE = "all"
@@ -233,6 +238,21 @@ table.portfolio td.lead { white-space: normal; min-width: 6rem; max-width: 8rem;
 .meta { display: flex; flex-wrap: wrap; gap: .35rem 1.5rem; margin: -.4rem 0 1rem; }
 .meta .fact small { display: block; color: var(--text-muted); font-size: .75rem; line-height: 1.3; }
 .meta .fact span { font-size: .9rem; }
+
+/* The planning page: the window row, and the tables. The epic queue is the longest. */
+#planning-filters .filters { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+#planning-filters .filters label:first-child { grid-column: auto; }
+#planning-filters fieldset.layers { display: flex; flex-wrap: wrap; gap: .2rem 1rem; align-items: center;
+                                    margin: 0; padding-bottom: .9rem; border: 0; }
+#planning-filters fieldset.layers legend { font-size: .9rem; padding: 0; margin-bottom: .2rem; }
+#planning > h2 { margin-top: 1.5rem; }
+table.plan { min-width: 56rem; }
+table.plan td.split { color: var(--text-secondary); font-size: .8rem; white-space: nowrap; }
+table.plan td.finish small { display: block; color: var(--text-muted); font-size: .75rem; }
+table.plan tr.layer-start td { border-top: 2px solid var(--hairline); }
+ul.left-out { font-size: .88rem; columns: 2 26rem; }
+ul.left-out li { break-inside: avoid; }
+ul.left-out small { color: var(--text-muted); margin-left: .4rem; }
 """
 
 # `this` is the header checkbox; the rows live in the same form.
@@ -289,7 +309,7 @@ app, rt = fast_app(title="monday sprint", live=LIVE, hdrs=(Style(CSS), Style(cha
 
 def page(title: str, *content: Any) -> Any:
     """Every page: the same nav, with the current page marked, then the route's content."""
-    links = (("Sprint", index), ("Epics", epics_page), ("Portfolio", portfolio_page))
+    links = (("Sprint", index), ("Epics", epics_page), ("Portfolio", portfolio_page), ("Planning", planning_page))
     return Titled(
         title,
         Nav(
@@ -1414,6 +1434,320 @@ def portfolio_item_view(item: str = "") -> Any:
             id="portfolio-item",
         )
     return portfolio_detail(found)
+
+
+# --- the planning page ------------------------------------------------------------------
+# Work per discipline against the team's capacity, and which epics that lets us finish.
+# The numbers are `planning.plan` over a cached `planning.Snapshot`: the dates and the
+# layers are the page's own inputs, so changing them re-plans without a monday.com read.
+
+
+def planning_cache(refresh: bool = False) -> planning.Snapshot:
+    """The planning boards, fetched on first use and then reused. `refresh` re-reads them."""
+    if refresh or not _PLANNING:
+        with MondayClient() as client:
+            _PLANNING[:] = [planning.fetch(client)]
+    return _PLANNING[0]
+
+
+def planning_date_fields(start: str, end: str) -> Any:
+    """The window's two dates. They show the window in use, so they come back out of band."""
+    return Div(
+        Label("Start", Input(type="date", name="start", value=start)),
+        Label("Quarter end", Input(type="date", name="end", value=end)),
+        id="planning-dates",
+        style="display: contents",
+    )
+
+
+def planning_filters(start: str, end: str, layers: tuple[str, ...]) -> Any:
+    """The window and the layers. Capacity always goes to the layers ahead first, so
+    ticking Backlog alone shows what is left of it once the promise is kept."""
+    return Form(
+        Div(
+            planning_date_fields(start, end),
+            Fieldset(
+                Legend("Show"),
+                *[
+                    Label(Input(type="checkbox", name="layer", value=key, checked=key in layers), label)
+                    for key, label in planning.LAYERS.items()
+                ],
+                cls="layers",
+            ),
+            cls="filters",
+        ),
+        Div(
+            Button("Apply", type="submit"),
+            A("Reset", href=planning_page, role="button", cls="secondary outline"),
+            Button(
+                "Refresh from monday.com",
+                type="button",
+                cls="secondary outline",
+                hx_get=planning_view.to(refresh=1),
+                hx_include="#planning-filters",
+                hx_target="#planning",
+                hx_swap="outerHTML",
+                hx_indicator="#planning-filters",
+            ),
+            Small(" loading…", id="spinner"),
+            cls="actions",
+        ),
+        hx_get=planning_view,
+        hx_target="#planning",
+        hx_swap="outerHTML",
+        hx_trigger="change, submit",
+        hx_indicator="closest form",
+        id="planning-filters",
+    )
+
+
+def load_tone(load: float | None) -> str:
+    """Overbooked is critical, nearly full is a warning, the rest is fine."""
+    if load is None or load > 1:
+        return "critical"
+    return "warning" if load > 0.85 else "good"
+
+
+def _sprints(value: float | None) -> str:
+    return "nobody" if value is None else f"{value:.1f}"
+
+
+def planning_tiles(p: planning.Plan, layers: tuple[str, ...]) -> Any:
+    """The headline: how long the window is, what fits, what is late, who is the bottleneck."""
+    w = p.window
+    shown = p.shown(layers)
+    counted = [q for q in shown if q.split.has_todo]
+    fitting = sum(1 for q in counted if q.fits(w))
+    late = sum(1 for q in shown if q.late)
+    tiles = [
+        chart.tile("Sprints", str(w.sprints), f"whole sprints, to {w.last_day}" if w.sprints else "none fit"),
+        chart.tile("Epics that fit", f"{fitting} of {len(counted)}", "finish within the window"),
+        chart.tile("Late", str(late), "against their own due date", "tone-critical" if late else ""),
+    ]
+    heaviest = planning.most_overbooked(p, layers)
+    if heaviest:
+        top = heaviest[0]
+        load = top.load(layers, w.sprints)
+        text = "nobody" if load is None else f"{load:.0%}"
+        tiles.append(chart.tile("Most booked", text, f"{top.key} · {top.name}", f"tone-{load_tone(load)}"))
+    left_out = sum(1 for pr in p.problems if pr.layer in layers)
+    if left_out:
+        tiles.append(chart.tile("Left out", str(left_out), "epics to fix on monday.com", "tone-warning"))
+    return Div(*tiles, cls="kpis")
+
+
+def discipline_table(p: planning.Plan, layers: tuple[str, ...]) -> Any:
+    """One row per discipline, heaviest first: who, how much they can do, how much there is."""
+    sprints = p.window.sprints
+    heads = [
+        Th("Discipline"),
+        Th("People"),
+        Th("STP / sprint", cls="tight"),
+        Th("Capacity", cls="tight"),
+        *[Th(label, cls="tight") for label in planning.LAYERS.values()],
+        Th("Queued", cls="tight"),
+        Th("Sprints needed", cls="tight"),
+        Th("Load", cls="tight"),
+    ]
+    rows = [
+        Tr(
+            Td(Strong(d.key), " ", Small(d.name)),
+            Td(chart.people(", ".join(person.name for person in d.people)) if d.people else "—", cls="owner"),
+            Td(f"{d.per_sprint:.1f}", cls="num tight"),
+            Td(f"{d.per_sprint * sprints:.1f}", cls="num tight"),
+            *[
+                Td(f"{d.demand.get(key, 0.0):.1f}" if d.demand.get(key) else "", cls="num tight")
+                for key in planning.LAYERS
+            ],
+            Td(Strong(f"{d.through(layers):.1f}"), cls="num tight"),
+            Td(f"{_sprints(d.sprints_needed(layers))} of {sprints}", cls="num tight"),
+            Td(chart.load_meter(d.through(layers), d.per_sprint * sprints), cls="tight progress"),
+        )
+        for d in planning.most_overbooked(p, layers)
+    ]
+    return Div(
+        Table(
+            Caption(
+                "Queued is the layers shown plus every layer ahead of them: capacity goes to the promise first. "
+                "Capacity is STP × availability this quarter × (1 − overhead), over the whole sprints.",
+                cls="hint",
+            ),
+            Thead(Tr(*heads)),
+            Tbody(*rows),
+            cls="epics",
+        ),
+        cls="table-wrap",
+    )
+
+
+def split_text(split: planning.Split) -> str:
+    """The four percentages in the board's order, compact: `35 / 30 / 25 / 10`."""
+    return " / ".join(f"{split.shares.get(key) or 0:g}" for key in planning.DISCIPLINES)
+
+
+def queue_row(q: planning.Planned, w: planning.Window, first_of_layer: bool) -> Any:
+    """One epic in the queue: where it sits, what is left, and when it is forecast to finish."""
+    verdict, tone = q.verdict(w)
+    finish = (str(q.finish), Small(f"sprint {q.finish_sprint}")) if q.finish else ()
+    return Tr(
+        Td(planning.LAYERS[q.layer], cls="tight"),
+        Td(A(q.epic.name, href=q.epic.url, target="_blank", rel="noopener"), cls="item"),
+        Td(chart.status_tag(q.epic.status), cls="tight"),
+        Td(chart.priority_tag(q.epic.priority), cls="tight"),
+        Td(str(q.epic.due or ""), cls="tight"),
+        Td(bd.fmt(q.todo) if q.split.has_todo else "", cls="num tight"),
+        Td(A(split_text(q.split), href=q.split.url, target="_blank", rel="noopener"), cls="split"),
+        Td(*finish, cls="tight finish"),
+        Td(chart.tag(verdict, tone), cls="tight"),
+        cls="layer-start" if first_of_layer else None,
+    )
+
+
+def queue_table(p: planning.Plan, layers: tuple[str, ...]) -> Any:
+    shown = p.shown(layers)
+    if not shown:
+        return P("No epic in these layers has a usable split on Epics-STP-distribution yet.")
+    heads = ("Layer", "Epic", "Status epic", "Priority", "Due", "STP-TODO", "DE / DB / DS / PO", "Finish", "Forecast")
+    rows = [queue_row(q, p.window, i == 0 or shown[i - 1].layer != q.layer) for i, q in enumerate(shown)]
+    return Div(
+        Table(
+            Caption("In queue order: layer, then priority, then due date, then smallest first.", cls="hint"),
+            Thead(Tr(*[Th(h, cls=None if h == "Epic" else "tight") for h in heads])),
+            Tbody(*rows),
+            cls="epics plan",
+        ),
+        cls="table-wrap",
+    )
+
+
+def next_sprint_table(p: planning.Plan) -> Any:
+    """The coming sprint: what is in its group per discipline, against this sprint's availability."""
+    n = p.next_sprint
+    rows = [
+        Tr(
+            Td(Strong(key), " ", Small(planning.DISCIPLINE_NAMES[key])),
+            Td(f"{n.load[key]:.1f}", cls="num tight"),
+            Td(f"{n.capacity[key]:.1f}", cls="num tight"),
+            Td(chart.load_meter(n.load[key], n.capacity[key]), cls="tight progress"),
+        )
+        for key in planning.DISCIPLINES
+    ]
+    note = None
+    if n.unplaced:
+        note = P(
+            Small(
+                f"{bd.fmt(n.unplaced)} more points sit on tasks whose epic has no usable split, "
+                "so they are on no discipline.",
+                style="opacity:.7",
+            )
+        )
+    return Div(
+        Div(
+            Table(
+                Thead(
+                    Tr(
+                        Th("Discipline"),
+                        Th("Planned", cls="tight"),
+                        Th("Capacity", cls="tight"),
+                        Th("Load", cls="tight"),
+                    )
+                ),
+                Tbody(*rows),
+                cls="epics",
+                style="min-width: 0",
+            ),
+            cls="table-wrap",
+        ),
+        note,
+    )
+
+
+def left_out(p: planning.Plan, layers: tuple[str, ...]) -> Any:
+    """The epics the plan could not count, each with a link to where it is fixed."""
+    problems = [pr for pr in p.problems if pr.layer in layers]
+    if not problems:
+        return None
+    return Details(
+        Summary(f"{len(problems)} epics are left out of every number — fix them on monday.com"),
+        Ul(
+            *[
+                Li(
+                    A(pr.epic.name, href=pr.url, target="_blank", rel="noopener"),
+                    Small(f"{planning.LAYERS[pr.layer]} · {pr.reason}"),
+                )
+                for pr in problems
+            ],
+            cls="left-out",
+        ),
+    )
+
+
+def planning_section(p: planning.Plan, layers: tuple[str, ...]) -> Any:
+    """Everything under the filters: tiles, disciplines, the queue, the next sprint, the gaps."""
+    w = p.window
+    unassigned = [
+        P(Small(f"{person.name} on Capaciteit has no discipline as role, so counts for nobody."))
+        for person in p.unassigned_people
+    ]
+    return Div(
+        H2(f"{w.start} – {w.end}"),
+        P(Small(" + ".join(planning.LAYERS[key] for key in layers)), cls="lede"),
+        planning_tiles(p, layers),
+        Div(
+            H3("Per discipline"),
+            Small("heaviest load first · strict: nobody takes another discipline's share"),
+            cls="section-head",
+        ),
+        discipline_table(p, layers),
+        *unassigned,
+        Div(H3("Epics"), Small("the finish is the sprint the slowest discipline gets through it"), cls="section-head"),
+        queue_table(p, layers),
+        left_out(p, layers),
+        Div(
+            H3("Next sprint"),
+            Small(f"{p.next_sprint.tasks} open tasks in the Next sprint group · availability for the coming sprint"),
+            cls="section-head",
+        ),
+        next_sprint_table(p),
+        cls="viz",
+        id="planning",
+    )
+
+
+@rt("/planning")
+def planning_page(start: str = "", end: str = "", layer: list[str] | None = None) -> Any:
+    """The planning. The numbers arrive on their own request, behind a spinner: a cold
+    cache means reading the epic board and four smaller reads."""
+    layers = planning.parse_layers(layer)
+    return page(
+        "Planning",
+        lede("Planned STP per discipline against capacity, and which epics that lets us finish."),
+        planning_filters(start, end, layers),
+        Div(
+            P(Small("Loading the planning boards…"), aria_busy="true"),
+            id="planning",
+            hx_get=planning_view.to(start=start, end=end, layer=list(layers)),
+            hx_trigger="load",
+            hx_swap="outerHTML",
+        ),
+    )
+
+
+@rt
+def planning_view(start: str = "", end: str = "", layer: list[str] | None = None, refresh: int = 0) -> Any:
+    """The section under the filters. The dates ride back out of band, so the fields show
+    the window the plan settled on rather than a blank."""
+    layers = planning.parse_layers(layer)
+    try:
+        snapshot = planning_cache(refresh=bool(refresh))
+        w = planning.window(snapshot.current_end, start=start, end=end)
+    except FETCH_ERRORS as exc:
+        return error(exc, id="planning")
+    p = planning.plan(snapshot, w)
+    return (
+        planning_section(p, layers),
+        planning_date_fields(str(w.start), str(w.end))(hx_swap_oob="true"),
+    )
 
 
 def run(host: str = "127.0.0.1", port: int = 5001, reload: bool = True) -> None:

@@ -37,6 +37,9 @@ uv run monday epic-progress --stuck         # only the blocked epics, with their
 uv run monday portfolio                     # IV Portfolio items with their epics rolled up
 uv run monday portfolio --item "EBO EIS"    # one item: its fields and every epic under it
 uv run monday portfolio --stuck             # only the items with a blocked epic
+uv run monday planning                      # load per discipline, and which epics fit the quarter
+uv run monday planning --layer all          # promised + later + backlog
+uv run monday planning --end 2027-03-31     # plan to another quarter end
 uv run monday project DPR-223               # write an Obsidian project note for one epic
 uv run monday project 223 --stdout          # same epic, printed instead of written
 uv run monday project 2617136005 --out .    # by monday.com item id, into this directory
@@ -84,7 +87,7 @@ uv run monday web --port 8080
 uv run monday web --no-reload # without live reload
 ```
 
-Three pages: **Sprint**, **Epics** and **Portfolio**. The app live-reloads — edit
+Four pages: **Sprint**, **Epics**, **Portfolio** and **Planning**. The app live-reloads — edit
 anything under `src/mondaycom/` and the open tab refreshes itself, no restart needed.
 
 **Sprint** is one read of the board's *Current sprint* group, shown four ways: the
@@ -111,6 +114,13 @@ portfolio item with its Doelstelling, Type, Urgentie, Projectleider, how many ep
 has and how far their story points are. Click an item to open it and see the epics
 themselves — blocked ones first, then the most work left. Items with no epic linked
 (166 of 177) are hidden until you flip **Show unlinked**.
+
+**Planning** puts the remaining work per discipline (DE, DB, DS, PO/AT) against the
+team's capacity for a window you set — by default from the day after the current sprint
+to the end of that quarter, in whole sprints. It shows which discipline is most
+overbooked, how many sprints each needs, a forecast finish per epic, and the load of the
+Next sprint group against next sprint's availability. Tick **Promised**, **Later** and
+**Backlog** to choose what to show; capacity always goes to the promise first.
 
 Both pages carry a **Stuck** column. It is empty while things run; when an epic sits on
 *Impediment*, or a task of it does, it shows a red marker you can open to get the epic
@@ -180,3 +190,21 @@ return is reported under the table rather than dropped.
 
 It shares the epic cache, so opening it after the Epics page costs one extra request
 rather than another twenty seconds.
+
+### Planning
+
+Two boards drive it. **Epics-STP-distribution** holds one row per epic, *linked* to it,
+with STP-TODO (a mirror of the epic's "STP gepland") and the percentage of that work per
+discipline. **Capaciteit** holds one row per person with their discipline, STP per sprint
+at full availability, availability for the coming sprint and the quarter, and extra
+overhead. A person's capacity per sprint is `STP × available% × (1 − overhead%)`.
+
+- **Promised** is an Actief or Bespreken epic (the epic board's group) due on or before
+  the quarter end, or with no due date. **Later** is the same groups due after it.
+  **Backlog** is the Backlog group.
+- The queue runs Promised → Later → Backlog, and within a layer by priority, due date,
+  then smallest first. Each discipline works down it on its own; an epic finishes in the
+  sprint its slowest share does, and is **late** when that is after its due date.
+- Only epics with a linked row and a split that adds up to 100% are counted. Everything
+  else is listed under the queue as something to fix on monday.com — nothing is matched
+  by name and no default split is assumed.

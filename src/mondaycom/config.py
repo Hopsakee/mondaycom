@@ -185,12 +185,64 @@ PORTFOLIO_BOARD = Board(
     },
 )
 
+# The planning board: one row per epic, linked to it, carrying how its remaining work
+# splits over the four disciplines. STP-TODO is a mirror of the epic board's "STP
+# gepland", so over the API it answers with its members ("19, 3, 1") — see
+# `planning.parse_mirror`. Only a *linked* row counts: nothing is matched by name.
+DISTRIBUTION_BOARD = Board(
+    name="Epics-STP-distribution",
+    id=5105081537,
+    columns={
+        "epic": "board_relation_mm7m2g0t",  # "Epics" — board_relation to EPIC_BOARD
+        "todo": "lookup_mm7m50j4",  # "STP-TODO" — mirror of the epic board's "STP gepland"
+        "DE": "numeric_mm7m8y7v",  # data engineering, % of the epic's work
+        "DB": "numeric_mm7mp9d9",  # dashboarding
+        "DS": "numeric_mm7mhdgy",  # data science
+        "PO/AT": "numeric_mm7mt7wm",  # product owner / analytics translator
+    },
+)
+
+# Who can do how much. One row per person; the role is a status column, so one each.
+CAPACITY_BOARD = Board(
+    name="Capaciteit",
+    id=5105095781,
+    columns={
+        "role": "color_mm7m2d4f",  # "Label" — DE / DB / DS / PO/AT
+        "stp": "numeric_mm7m8ykm",  # "STP per sprint" at 100% availability
+        "sprint_available": "numeric_mm7m9yqv",  # "% beschikbaar komende sprint"
+        "quarter_available": "numeric_mm7mn3hb",  # "Beschikbaar komend kwartaal", a %
+        "overhead": "numeric_mm7m2ysv",  # "Overhead" — extra, a % on top of the usual
+    },
+)
+
 BOARDS = {
     "sprint": SPRINT_BOARD,
     "done": DONE_BOARD,
     "epic": EPIC_BOARD,
     "portfolio": PORTFOLIO_BOARD,
+    "distribution": DISTRIBUTION_BOARD,
+    "capacity": CAPACITY_BOARD,
 }
+
+# The four disciplines, in the order the distribution board shows them. Each is both a
+# column alias on DISTRIBUTION_BOARD and a role label on CAPACITY_BOARD.
+DISCIPLINES = ("DE", "DB", "DS", "PO/AT")
+DISCIPLINE_NAMES = {
+    "DE": "Data engineering",
+    "DB": "Dashboarding",
+    "DS": "Data science",
+    "PO/AT": "Product owner / AT",
+}
+
+# The epic board's groups decide an epic's planning layer — the distribution board has
+# the same four groups, but the epic's own is the truth. Ids, because titles get renamed.
+EPIC_GROUP_ACTIVE = "topics"  # "Actief"
+EPIC_GROUP_DISCUSS = "group_mksgwg1w"  # "Bespreken"
+EPIC_GROUP_BACKLOG = "new_group62235"  # "Backlog"
+PROMISED_GROUPS = frozenset({EPIC_GROUP_ACTIVE, EPIC_GROUP_DISCUSS})
+
+# The sprint board group whose tasks the "next sprint" check weighs.
+NEXT_SPRINT_GROUP = "new_group"  # "Next sprint"
 
 # The two boards a sprint task can live on: still open, or archived as finished.
 TASK_BOARDS = (SPRINT_BOARD, DONE_BOARD)

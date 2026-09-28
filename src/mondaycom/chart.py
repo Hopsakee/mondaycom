@@ -155,6 +155,15 @@ CHART_CSS = """
 .battery.wide .track { width: 14rem; }
 .battery.wide .value { min-width: 6rem; font-size: .85rem; }
 
+/* The load meter: the battery's track and fill, on a fixed 0–150% scale so rows compare,
+   with a tick where capacity runs out. Work past the tick is the critical tone, after a
+   2px surface gap — and always with "overbooked" in words beside it, never colour alone. */
+.battery.load .track { display: flex; gap: 2px; position: relative; overflow: visible; }
+.battery.load .over { height: 100%; border-radius: 4px; background: var(--tone-critical); }
+.battery.load .mark { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px;
+                      background: var(--text-secondary); border-radius: 1px; }
+.battery.load .value { min-width: 3rem; }
+
 /* Status chips: one tag per status with its count, the pressed one outlined. They are
    buttons, so they are keyboard-reachable, but they read as filter tokens. */
 .chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 .9rem; }
@@ -649,4 +658,45 @@ def battery(done: float, remaining: float, wide: bool = False) -> Any:
         Span(f"{fmt(done)}/{fmt(total)} · {percent:.0f}%" if wide else f"{percent:.0f}%", cls="value"),
         cls=cls,
         title=f"{fmt(done)} done, {fmt(remaining)} still open, {fmt(total)} committed",
+    )
+
+
+#: The load meter's full width, as a fraction of capacity: room to show a discipline half
+#: again as overbooked before the fill runs off the end. Fixed, so every row compares.
+LOAD_SCALE = 1.5
+
+
+def load_meter(points: float, capacity: float) -> Any:
+    """Work queued against capacity, as a meter with a tick where capacity runs out.
+
+    The same track as the battery, so the page reads as one system, but the question is
+    the other way round: a full battery is good news, a meter past its tick is not. What
+    lies beyond the tick wears the critical tone and says "overbooked" beside it.
+    """
+    if not capacity:
+        return Div(
+            Div(cls="track"),
+            Span("nobody" if points else "—", cls="value"),
+            cls="battery load empty",
+            title="Nobody on Capaciteit has this role" if points else "Nothing queued, nobody to do it",
+        )
+    load = points / capacity
+    within = min(load, 1) / LOAD_SCALE * 100
+    over = max(min(load, LOAD_SCALE) - 1, 0) / LOAD_SCALE * 100
+    value: Any = tag(f"{load:.0%} · overbooked", "critical") if load > 1 else f"{load:.0%}"
+    return Div(
+        Div(
+            Div(cls="fill", style=f"width: {within:.1f}%") if within else None,
+            Div(cls="over", style=f"width: {over:.1f}%") if over else None,
+            Span(cls="mark", style=f"left: {100 / LOAD_SCALE:.1f}%", aria_hidden="true"),
+            cls="track",
+            role="meter",
+            aria_valuenow=f"{points:.1f}",
+            aria_valuemin="0",
+            aria_valuemax=f"{capacity:.1f}",
+            aria_label=f"{fmt(round(points, 1))} of {fmt(round(capacity, 1))} story points of capacity",
+        ),
+        Span(value, cls="value"),
+        cls="battery load",
+        title=f"{fmt(round(points, 1))} queued, {fmt(round(capacity, 1))} capacity",
     )

@@ -1,0 +1,560 @@
+"""The planning: how much work each discipline has, and how much it can do.
+
+Three boards meet here. **Epics-STP-distribution** holds one row per epic, linked to it,
+with the epic's remaining work (STP-TODO, a mirror of the epic board's "STP gepland")
+and how that work splits over the four disciplines. **Capaciteit** holds one row per
+person: their discipline, what they burn in a sprint at full availability, how available
+they are, and any extra overhead expected. The **epic board** decides which layer an
+epic is planned in, by its group and its due date.
+
+- **monday.com is the source of truth.** STP-TODO is read as the board computes it, and
+  only a *linked* distribution row counts — an epic without one, or with a split that
+  does not add up to 100%, is left out of every number and listed as something to fix
+  on monday.com, not patched up here. The one thing done in code is adding up the
+  mirror's members, because a mirror answers ``"19, 3, 1"`` rather than 23.
+- **Layers.** *Promised* is Actief or Bespreken, due on or before the quarter end (or
+  with no due date). *Later* is Actief or Bespreken due after it. *Backlog* is Backlog.
+- **One queue.** Capacity goes to the layers in that order, and within a layer by
+  priority, then due date, then smallest first. Each discipline works down the queue on
+  its own, and an epic is finished in the sprint its *last* discipline share is — so a
+  backlog forecast is always what is left once the promise is kept.
+- **Strict per discipline.** DE work waits for DE capacity; nobody absorbs another
+  discipline's share.
+- **Capacity** per person per sprint is ``STP × available% × (1 − overhead%)``, with
+  the quarter's availability for the plan and the next sprint's for the next-sprint check.
+- The window is **whole sprints only**: from the day after the current sprint ends to
+  the quarter end, in blocks of three weeks.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from typing import Any
+
+from mondaycom import burndown as bd
+from mondaycom import queries
+from mondaycom.client import MondayClient
+from mondaycom.config import (
+    CANCELLED_STATUSES,
+    CAPACITY_BOARD,
+    DISTRIBUTION_BOARD,
+    DONE_STATUS,
+    EPIC_BOARD,
+    EPIC_GROUP_BACKLOG,
+    EPIC_PRIORITIES,
+    NEXT_SPRINT_GROUP,
+    PROMISED_GROUPS,
+    SPRINT_LENGTH_WEEKS,
+    Board,
+    as_number,
+    item_url,
+)
+from mondaycom.config import DISCIPLINE_NAMES as DISCIPLINE_NAMES  # the page and the CLI read them here
+from mondaycom.config import DISCIPLINES as DISCIPLINES
+from mondaycom.sorting import label_key
+
+PROMISED = "promised"
+LATER = "later"
+BACKLOG = "backlog"
+
+#: The layers in queue order, with the words the page and the CLI use for them.
+LAYERS = {
+    PROMISED: "Promised",
+    LATER: "Later",
+    BACKLOG: "Backlog",
+}
+
+#: A split within half a percent of 100 is 100: `33.3 + 33.3 + 33.4` is a valid split.
+SPLIT_TOLERANCE = 0.5
+
+SPRINT_DAYS = SPRINT_LENGTH_WEEKS * 7
+
+
+def parse_mirror(text: str) -> float:
+    """A number mirror's value: its members, added up.
+
+    Over the API a mirror answers with what it mirrors, comma-joined — ``"19, 3, 1"`` for
+    the 23 the UI shows — whatever the column's own `sum` setting says.
+    """
+    return sum(as_number(part.strip()) for part in (text or "").split(","))
+
+
+def as_date(text: str) -> date | None:
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+# --- the three boards -------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Split:
+    """One row of Epics-STP-distribution: an epic's remaining work and how it divides."""
+
+    id: str
+    name: str
+    #: The linked epic's item id; empty when the row links to nothing yet.
+    epic_id: str = ""
+    #: STP-TODO, as monday.com computes it.
+    todo: float = 0.0
+    #: Whether STP-TODO holds anything at all — an empty mirror is not the same as 0.
+    has_todo: bool = False
+    #: Percentage per discipline. A blank cell is `None`, which is not the same as 0.
+    shares: dict[str, float | None] = field(default_factory=dict)
+
+    @property
+    def total(self) -> float:
+        return sum(v or 0.0 for v in self.shares.values())
+
+    @property
+    def problem(self) -> str:
+        """Why this split cannot be used, in a few words; empty when it can."""
+        if all(self.shares.get(d) is None for d in DISCIPLINES):
+            return "no split filled in"
+        if abs(self.total - 100) > SPLIT_TOLERANCE:
+            return f"split adds up to {self.total:g}%"
+        return ""
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.problem
+
+    def share(self, discipline: str) -> float:
+        """The points this epic needs from one discipline."""
+        return self.todo * (self.shares.get(discipline) or 0.0) / 100
+
+    @property
+    def url(self) -> str:
+        return item_url(DISTRIBUTION_BOARD, self.id)
+
+    @classmethod
+    def from_item(cls, item: dict[str, Any], board: Board = DISTRIBUTION_BOARD) -> Split:
+        cells = board.cells(item)
+        linked = cells.linked("epic")
+        todo = cells.text("todo")
+        shares = {d: (as_number(cells.text(d)) if cells.text(d) else None) for d in DISCIPLINES}
+        return cls(
+            id=str(item["id"]),
+            name=item["name"],
+            epic_id=linked[0] if linked else "",
+            todo=parse_mirror(todo),
+            has_todo=bool(todo),
+            shares=shares,
+        )
+
+
+@dataclass(frozen=True)
+class Person:
+    """One row of Capaciteit."""
+
+    name: str
+    role: str = ""
+    #: STP per sprint at 100% availability.
+    stp: float = 0.0
+    sprint_available: float = 0.0
+    quarter_available: float = 0.0
+    #: Extra overhead this quarter, as a percentage of what is left after availability.
+    overhead: float = 0.0
+
+    def capacity(self, available: float) -> float:
+        """Usable STP in one sprint: ``STP × available% × (1 − overhead%)``."""
+        return self.stp * available / 100 * (1 - self.overhead / 100)
+
+    @property
+    def per_sprint(self) -> float:
+        """What this person burns in an average sprint of the planned quarter."""
+        return self.capacity(self.quarter_available)
+
+    @property
+    def next_sprint(self) -> float:
+        """What this person burns in the coming sprint."""
+        return self.capacity(self.sprint_available)
+
+    @classmethod
+    def from_item(cls, item: dict[str, Any], board: Board = CAPACITY_BOARD) -> Person:
+        cells = board.cells(item)
+        return cls(
+            name=item["name"],
+            role=cells.text("role"),
+            stp=cells.number("stp"),
+            sprint_available=cells.number("sprint_available"),
+            quarter_available=cells.number("quarter_available"),
+            overhead=cells.number("overhead"),
+        )
+
+
+@dataclass(frozen=True)
+class PlanEpic:
+    """An epic as the planning sees it: where it sits, how urgent it is, when it is due."""
+
+    id: str
+    name: str
+    group: str = ""
+    group_title: str = ""
+    status: str = ""
+    priority: str = ""
+    due: date | None = None
+
+    @property
+    def url(self) -> str:
+        return item_url(EPIC_BOARD, self.id)
+
+    @property
+    def is_planned(self) -> bool:
+        """In one of the groups the planning reads — Actief, Bespreken or Backlog."""
+        return self.group in PROMISED_GROUPS or self.group == EPIC_GROUP_BACKLOG
+
+    def layer(self, quarter_end: date) -> str:
+        """Which layer the epic is planned in, or empty when it is not planned at all."""
+        if self.group in PROMISED_GROUPS:
+            return LATER if self.due and self.due > quarter_end else PROMISED
+        return BACKLOG if self.group == EPIC_GROUP_BACKLOG else ""
+
+    @classmethod
+    def from_item(cls, item: dict[str, Any], board: Board = EPIC_BOARD) -> PlanEpic:
+        cells = board.cells(item)
+        group = item.get("group") or {}
+        return cls(
+            id=str(item["id"]),
+            name=item["name"],
+            group=group.get("id") or "",
+            group_title=group.get("title") or "",
+            status=cells.text("status"),
+            priority=cells.text("priority"),
+            due=as_date(cells.text("due_date")),
+        )
+
+
+@dataclass
+class Snapshot:
+    """Everything the planning reads from monday.com, before any date is chosen.
+
+    Kept apart from `plan` so the web page can fetch once and re-plan for every date
+    and layer a user tries, without another request.
+    """
+
+    splits: list[Split]
+    epics: list[PlanEpic]
+    people: list[Person]
+    #: The end of the sprint running now, as the Sprint page guesses it.
+    current_end: date
+    #: Tasks in the "Next sprint" group, for the next-sprint check.
+    next_sprint: list[bd.SprintItem] = field(default_factory=list)
+
+
+def fetch(client: MondayClient) -> Snapshot:
+    """Read the three planning boards and the two sprint groups the window needs.
+
+    The epic board is the slow one (~6s); the rest are a request each.
+    """
+    splits = [
+        Split.from_item(i)
+        for i in client.all_board_items(lambda cursor: queries.distribution_rows(DISTRIBUTION_BOARD, cursor))
+    ]
+    epics = [
+        PlanEpic.from_item(i) for i in client.all_board_items(lambda cursor: queries.planning_epics(EPIC_BOARD, cursor))
+    ]
+    people = [Person.from_item(i) for i in client.board_items(queries.capacity_rows(CAPACITY_BOARD))]
+    _, current_end = bd.sprint_window(bd.fetch_sprint_items(client))
+    upcoming = bd.fetch_sprint_items(client, group=NEXT_SPRINT_GROUP)
+    return Snapshot(splits=splits, epics=epics, people=people, current_end=current_end, next_sprint=upcoming)
+
+
+# --- the window -------------------------------------------------------------------------
+
+
+def quarter_end(day: date) -> date:
+    """The last day of the calendar quarter `day` falls in."""
+    first_of_next = date(day.year + (day.month > 9), (((day.month - 1) // 3 + 1) * 3) % 12 + 1, 1)
+    return first_of_next - timedelta(days=1)
+
+
+@dataclass(frozen=True)
+class Window:
+    """The stretch being planned, in whole sprints."""
+
+    start: date
+    end: date
+
+    @property
+    def sprints(self) -> int:
+        """How many whole three-week sprints fit between `start` and `end`, both inclusive."""
+        days = (self.end - self.start).days + 1
+        return max(days // SPRINT_DAYS, 0)
+
+    def sprint_end(self, n: int) -> date:
+        """The last day of the `n`-th sprint from `start`. Sprint 1 ends 20 days in."""
+        return self.start + timedelta(days=n * SPRINT_DAYS - 1)
+
+    @property
+    def last_day(self) -> date:
+        """The end of the last whole sprint — where the planned capacity runs out."""
+        return self.sprint_end(self.sprints) if self.sprints else self.start - timedelta(days=1)
+
+
+def window(current_end: date, start: str = "", end: str = "") -> Window:
+    """The window to plan: from the day after the current sprint to a quarter's end.
+
+    The quarter is the one the *first sprint ends in*, not the one it starts in: a
+    sprint starting on 28 September is Q4 work, and planning the two days left of Q3
+    would hold no whole sprint at all. Either end can be given as ``YYYY-MM-DD``.
+    """
+    begin = as_date(start) if start else current_end + timedelta(days=1)
+    if begin is None:
+        raise ValueError(f"{start!r} is not a date: expected YYYY-MM-DD")
+    finish = as_date(end) if end else quarter_end(begin + timedelta(days=SPRINT_DAYS - 1))
+    if finish is None:
+        raise ValueError(f"{end!r} is not a date: expected YYYY-MM-DD")
+    if finish < begin:
+        raise ValueError(f"The quarter end {finish} lies before the start {begin}.")
+    return Window(begin, finish)
+
+
+# --- the plan ---------------------------------------------------------------------------
+
+
+@dataclass
+class Discipline:
+    """One discipline's side of the plan: who does it, how much they can do, how much there is."""
+
+    key: str
+    people: list[Person] = field(default_factory=list)
+    #: Points needed per layer, from the epics with a valid split.
+    demand: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        return DISCIPLINE_NAMES.get(self.key, self.key)
+
+    @property
+    def per_sprint(self) -> float:
+        return sum(p.per_sprint for p in self.people)
+
+    @property
+    def next_sprint(self) -> float:
+        return sum(p.next_sprint for p in self.people)
+
+    def through(self, layers: tuple[str, ...]) -> float:
+        """The points queued up to and including the last of `layers` — everything ahead
+        of a layer counts, because capacity goes to it first."""
+        order = list(LAYERS)
+        last = max((order.index(layer) for layer in layers), default=-1)
+        return sum(self.demand.get(layer, 0.0) for layer in order[: last + 1])
+
+    def sprints_needed(self, layers: tuple[str, ...]) -> float | None:
+        """Sprints to clear the queue through `layers`. `None` when nobody does this work."""
+        points = self.through(layers)
+        if not points:
+            return 0.0
+        return points / self.per_sprint if self.per_sprint else None
+
+    def load(self, layers: tuple[str, ...], sprints: int) -> float | None:
+        """Queued points as a fraction of what the window holds. Above 1 is overbooked."""
+        capacity = self.per_sprint * sprints
+        points = self.through(layers)
+        if not capacity:
+            return None if points else 0.0
+        return points / capacity
+
+
+@dataclass
+class Planned:
+    """One epic in the queue, with its forecast."""
+
+    epic: PlanEpic
+    split: Split
+    layer: str
+    #: The sprint, counted from the window's start, in which its last share is done.
+    #: 0 when there is nothing left to do; `None` when a discipline it needs has nobody.
+    finish_sprint: int | None = 0
+    finish: date | None = None
+
+    @property
+    def todo(self) -> float:
+        return self.split.todo
+
+    @property
+    def late(self) -> bool:
+        """Forecast to finish after its own due date."""
+        if not self.epic.due:
+            return False
+        return self.finish_sprint is None or (self.finish is not None and self.finish > self.epic.due)
+
+    def fits(self, w: Window) -> bool:
+        """Finished within the window's whole sprints."""
+        return self.finish_sprint is not None and self.finish_sprint <= w.sprints
+
+    def verdict(self, w: Window) -> tuple[str, str]:
+        """The forecast in a few words, and the tone it wears."""
+        if not self.split.has_todo:
+            return "no STP-TODO", "neutral"
+        if self.finish_sprint is None:
+            return "no capacity", "critical"
+        if self.late:
+            return "late", "critical"
+        if not self.finish_sprint:
+            return "nothing left", "good"
+        if self.fits(w):
+            return ("on time" if self.epic.due else "this quarter"), "good"
+        return "after the quarter", "warning"
+
+
+@dataclass(frozen=True)
+class Problem:
+    """An epic the plan had to leave out, and what to fix on monday.com."""
+
+    epic: PlanEpic
+    layer: str
+    reason: str
+    url: str
+
+
+@dataclass
+class NextSprint:
+    """The coming sprint: capacity per discipline against the work already in its group."""
+
+    capacity: dict[str, float]
+    load: dict[str, float]
+    #: Open points in the group whose epic has no usable split, so no discipline to put them on.
+    unplaced: float = 0.0
+    tasks: int = 0
+
+
+@dataclass
+class Plan:
+    """The whole answer: the window, the disciplines, the queue and what it left out."""
+
+    window: Window
+    disciplines: list[Discipline]
+    queue: list[Planned]
+    problems: list[Problem]
+    next_sprint: NextSprint
+    #: People on Capaciteit whose role is not one of the four disciplines.
+    unassigned_people: list[Person] = field(default_factory=list)
+
+    def layer(self, layer: str) -> list[Planned]:
+        return [p for p in self.queue if p.layer == layer]
+
+    def shown(self, layers: tuple[str, ...]) -> list[Planned]:
+        return [p for p in self.queue if p.layer in layers]
+
+
+def queue_key(p: Planned) -> tuple[Any, ...]:
+    """Layer, then priority in the board's order, then earliest due date, then smallest."""
+    return (
+        list(LAYERS).index(p.layer),
+        (not p.epic.priority, label_key(EPIC_PRIORITIES, p.epic.priority)),
+        (p.epic.due is None, p.epic.due or date.max),
+        p.todo,
+        p.epic.name.lower(),
+    )
+
+
+def forecast(queue: list[Planned], disciplines: list[Discipline], w: Window) -> None:
+    """Walk the queue once, each discipline on its own, and date every epic's finish.
+
+    A discipline's cumulative points divided by its capacity per sprint is the sprint in
+    which it gets through that epic; the epic is done when its slowest share is.
+    """
+    per_sprint = {d.key: d.per_sprint for d in disciplines}
+    cumulative = dict.fromkeys(per_sprint, 0.0)
+    for p in queue:
+        finish: int | None = 0
+        for key in per_sprint:
+            share = p.split.share(key)
+            if not share:
+                continue
+            cumulative[key] += share
+            if not per_sprint[key]:
+                finish = None
+                continue
+            if finish is not None:
+                # A hair under a whole number is that whole number, not the next sprint.
+                finish = max(finish, math.ceil(cumulative[key] / per_sprint[key] - 1e-9))
+        p.finish_sprint = finish
+        # Nothing left to do has no finish date to forecast: it is finished already.
+        p.finish = w.sprint_end(finish) if finish else None
+
+
+def next_sprint(snapshot: Snapshot, splits: dict[str, Split]) -> NextSprint:
+    """Weigh the Next sprint group per discipline, by each task's epic split."""
+    load = dict.fromkeys(DISCIPLINES, 0.0)
+    unplaced = 0.0
+    tasks = 0
+    for item in snapshot.next_sprint:
+        if item.status == DONE_STATUS or item.status in CANCELLED_STATUSES or not item.points:
+            continue
+        tasks += 1
+        split = splits.get(item.epic_id)
+        if split is None:
+            unplaced += item.points
+            continue
+        for key in DISCIPLINES:
+            load[key] += item.points * (split.shares.get(key) or 0.0) / 100
+    capacity = {key: sum(p.next_sprint for p in snapshot.people if p.role == key) for key in DISCIPLINES}
+    return NextSprint(capacity=capacity, load=load, unplaced=unplaced, tasks=tasks)
+
+
+def plan(snapshot: Snapshot, w: Window) -> Plan:
+    """Put every planned epic in its layer, queue them, and forecast the queue."""
+    # First valid link wins; a second row on the same epic would count its work twice.
+    splits: dict[str, Split] = {}
+    bad: dict[str, Split] = {}
+    for split in snapshot.splits:
+        if not split.epic_id:
+            continue
+        if split.is_valid:
+            splits.setdefault(split.epic_id, split)
+        else:
+            bad.setdefault(split.epic_id, split)
+
+    queue: list[Planned] = []
+    problems: list[Problem] = []
+    for epic in snapshot.epics:
+        layer = epic.layer(w.end)
+        if not layer:
+            continue
+        split = splits.get(epic.id)
+        if split is not None:
+            queue.append(Planned(epic=epic, split=split, layer=layer))
+        elif epic.id in bad:
+            problems.append(Problem(epic, layer, bad[epic.id].problem, bad[epic.id].url))
+        else:
+            problems.append(Problem(epic, layer, "not linked on Epics-STP-distribution", epic.url))
+    queue.sort(key=queue_key)
+
+    disciplines = [Discipline(key, [p for p in snapshot.people if p.role == key]) for key in DISCIPLINES]
+    for d in disciplines:
+        for p in queue:
+            d.demand[p.layer] = d.demand.get(p.layer, 0.0) + p.split.share(d.key)
+    forecast(queue, disciplines, w)
+
+    problems.sort(key=lambda pr: (list(LAYERS).index(pr.layer), pr.epic.name.lower()))
+    return Plan(
+        window=w,
+        disciplines=disciplines,
+        queue=queue,
+        problems=problems,
+        next_sprint=next_sprint(snapshot, splits),
+        unassigned_people=[p for p in snapshot.people if p.role not in DISCIPLINES],
+    )
+
+
+def parse_layers(values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    """The layers asked for, in queue order. Nothing, or nothing known, means Promised."""
+    picked = tuple(layer for layer in LAYERS if layer in (values or ()))
+    return picked or (PROMISED,)
+
+
+def most_overbooked(p: Plan, layers: tuple[str, ...]) -> list[Discipline]:
+    """The disciplines, heaviest load first. Nobody to do the work sorts on top."""
+
+    def key(d: Discipline) -> float:
+        load = d.load(layers, p.window.sprints)
+        return -math.inf if load is None else -load
+
+    return sorted(p.disciplines, key=key)
