@@ -215,6 +215,46 @@ def test_note_markdown_resolves_the_templater_calls() -> None:
     assert "tp.file" not in note
 
 
+def test_the_note_is_rendered_from_docs_project_md() -> None:
+    """The template in docs/ is the only copy, so every line of it reaches the note."""
+    template = project.template_text()
+    assert template.startswith('<%"---"%>'), "the raw Templater template, not a copy"
+    body = template.split('<%"---"%>')[2]
+    note = project.note_markdown(sample())
+    for line in body.splitlines():
+        if line.strip() and "<%" not in line:
+            assert line.rstrip() in note, "every body line survives, filled in or as it stands"
+
+
+def test_an_edit_to_the_template_reaches_the_note_without_a_python_edit() -> None:
+    template = project.template_text().replace("# Overleggen en afspraken", "# Overleggen\n\nNieuw blok")
+    note = project.note_markdown(sample(), template=template)
+    assert "# Overleggen\n\nNieuw blok" in note
+    assert "# Overleggen en afspraken" not in note
+
+
+def test_a_key_the_template_lacks_is_added_to_the_frontmatter() -> None:
+    template = '<%"---"%>\nfileClass: project\n<%"---"%>\n# Doel en toelichting\n'
+    head = project.note_markdown(sample(), template=template).split("---")[1]
+    assert "fileClass: project" in head
+    assert "projectstatus: loopt" in head
+    assert "tags:\n  - project" in head
+
+
+def test_a_filled_key_replaces_what_the_template_nested_under_it() -> None:
+    template = '<%"---"%>\ntags:\n  - project\nrol:\n  - x\naliases:\n  - keep\n<%"---"%>\n'
+    head = project.note_markdown(sample(), template=template).split("---")[1]
+    assert head.count("- project") == 1
+    assert "- x" not in head
+    assert "aliases:\n  - keep" in head, "a key we do not fill keeps its list"
+
+
+def test_a_templater_call_we_cannot_resolve_is_an_error_not_text() -> None:
+    template = project.template_text().replace("[[!d5_Projecten WDOD-MOC]]", "<% tp.date.now() %>")
+    with pytest.raises(ValueError, match="tp.date.now"):
+        project.note_markdown(sample(), template=template)
+
+
 def test_meta_table_holds_the_epic_and_skips_empty_fields() -> None:
     note = project.note_markdown(sample())
     assert "| Epic | [Data validatie hydrologisch modelleren het vervolg]" in note

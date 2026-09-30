@@ -5,9 +5,10 @@ project template with everything the board already knows filled in — codes, da
 who is involved, and the epic's own metadata — so the note starts where monday.com
 stops rather than as an empty form.
 
-The template it renders is `docs/Project.md`, which is a Templater template: its
-`<% tp.* %>` calls are evaluated by Obsidian when *it* creates a note. We create the
-file ourselves, so the dynamic parts are resolved here instead — the creation stamp is
+The template it renders is `docs/Project.md`, read as it stands — it is the only copy,
+so an edit there changes the next note without a Python edit. It is a Templater
+template: its `<% tp.* %>` calls are evaluated by Obsidian when *it* creates a note. We
+create the file ourselves, so they are resolved here instead — the creation stamp is
 now, and the `tp.file.move` line is replaced by writing into the projects folder. The
 `&=choice(...)` inline expressions are Dataview, evaluated when the note is *read*, and
 are copied through untouched.
@@ -18,6 +19,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -44,13 +46,15 @@ PROJECT_REF = re.compile(rf"^{PROJECT_PREFIX}[-\s_]?(\d+)$", re.IGNORECASE)
 #: `[[linked]]` by name.
 ILLEGAL_IN_FILENAME = re.compile(r'[<>:"/\\|?*\[\]#^]+')
 
+#: One Templater tag, `<% … %>`.
+TEMPLATER_TAG = re.compile(r"<%\s*(.*?)\s*%>")
 
-#: The template's opening callout, kept word for word. It is a constant rather than a
-#: line of the rendered block only because it is longer than the repo's 120 columns.
-CHASE_OR_SKIP = (
-    "> [!todo] Eerst: chase of skip? Maak [[Besluit chase-of-skip]] — de drie poorten: "
-    "wie vangt het op? / past het binnen het deel? / landt het?"
-)
+#: A `**Label:** value` line — the Betrokken and Locaties blocks are made of them.
+LABEL_LINE = re.compile(r"^\*\*(.+?):\*\*")
+
+#: The template's headings the board's values go under.
+PURPOSE_HEADING = "# Doel en toelichting"
+META_HEADING = "# Project meta data"
 
 
 class NotFound(ValueError):
@@ -200,14 +204,99 @@ def _safe(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip(" .")
 
 
-def _meta(key: str, value: str) -> str:
-    """One frontmatter line. Empty values leave a bare `key:`, never a trailing space."""
-    return f"{key}: {value}".rstrip()
+def template_text() -> str:
+    """The vault's project template, `docs/Project.md`.
+
+    A wheel carries it as package data (pyproject's `force-include`); a checkout, where
+    `uv sync` installs the package in place, reads it straight out of `docs/`.
+    """
+    packaged = resources.files("mondaycom") / "Project.md"
+    if packaged.is_file():
+        return packaged.read_text(encoding="utf-8")
+    return (Path(__file__).resolve().parents[2] / "docs" / "Project.md").read_text(encoding="utf-8")
 
 
-def _line(label: str, value: str) -> str:
-    """One `**Label:** value` line of the Betrokken block — the label stays when empty."""
-    return f"**{label}:** {value}".rstrip()
+def _resolve_templater(template: str, stamp: str) -> list[str]:
+    """The template's lines with every `<% … %>` resolved the way Templater would.
+
+    A quoted literal is itself, `tp.file.creation_date()` is `stamp`, and a line that
+    only moved the file disappears — we write into the projects folder instead. Any
+    other call raises: a `<%` left in the note would be written out as text.
+    """
+
+    def resolve(match: re.Match[str]) -> str:
+        expr = match.group(1)
+        if literal := re.fullmatch(r'"([^"]*)"|\'([^\']*)\'', expr):
+            return literal.group(1) or literal.group(2) or ""
+        if expr.startswith("tp.file.creation_date("):
+            return stamp
+        if re.match(r"(await\s+)?tp\.file\.move\(", expr):
+            return ""
+        raise ValueError(f"the project template uses a Templater call project.py cannot resolve: <% {expr} %>")
+
+    lines = []
+    for line in template.splitlines():
+        resolved, tags = TEMPLATER_TAG.subn(resolve, line)
+        if resolved.strip() or not tags:
+            lines.append(resolved)
+    return lines
+
+
+def _fill_frontmatter(lines: list[str], values: dict[str, str | list[str]]) -> list[str]:
+    """Set each key of `values` in the frontmatter; keys the template lacks go last.
+
+    A list becomes a YAML list under its key, and a filled key replaces whatever the
+    template had nested under it.
+    """
+
+    def entry(key: str, value: str | list[str]) -> list[str]:
+        if isinstance(value, list):
+            return [f"{key}:", *(f"  - {v}" for v in value)]
+        return [f"{key}: {value}"]
+
+    if lines[:1] != ["---"] or "---" not in lines[1:]:
+        raise ValueError("the project template has no frontmatter to fill")
+    close = lines.index("---", 1)
+    head: list[str] = []
+    missing, filled = dict(values), False
+    for line in lines[1:close]:
+        key = line.split(":", 1)[0]
+        if ":" in line and key in missing:
+            head.extend(entry(key, missing.pop(key)))
+            filled = True
+        elif not (filled and line[:1].isspace()):
+            # An indented line belongs to the key above it; a filled key replaces it too.
+            head.append(line)
+            filled = False
+    for key, value in missing.items():
+        head.extend(entry(key, value))
+    return ["---", *head, *lines[close:]]
+
+
+def _section_end(lines: list[str], heading: str) -> int:
+    """Where the section under `heading` ends: before the next heading of its level,
+    and before the blank lines leading up to it. The end of the note if it is missing."""
+    level = heading.split(" ", 1)[0] + " "
+    try:
+        start = lines.index(heading) + 1
+    except ValueError:
+        return len(lines)
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith(level)), len(lines))
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return end
+
+
+def _fill_labels(lines: list[str], values: dict[str, str]) -> list[str]:
+    """Fill every `**Label:**` line `values` has an answer for; the label stays when empty."""
+
+    def fill(line: str) -> str:
+        match = LABEL_LINE.match(line)
+        if match and match.group(1) in values:
+            return f"{match.group(0)} {values[match.group(1)]}"
+        return line
+
+    return [fill(line) for line in lines]
 
 
 def _row(label: str, value: str) -> str:
@@ -254,97 +343,43 @@ def _purpose(project: Project) -> str:
     return "\n\n".join(blocks)
 
 
-def note_markdown(project: Project, created: datetime | None = None) -> str:
+def note_markdown(project: Project, created: datetime | None = None, template: str | None = None) -> str:
     """Render the vault's project template with this epic's values filled in.
 
     `created` is the note's creation stamp, in the `YYYY-MM-DD HH:mm` the vault's other
     project notes use; it defaults to now, which is what Templater would have written.
+    `template` defaults to `docs/Project.md`.
     """
     stamp = (created or datetime.now()).strftime("%Y-%m-%d %H:%M")
-    # Quoted: a ten-digit item id is a number to YAML, and Dataview would render it in
-    # scientific notation. The vault's existing notes quote it for the same reason.
-    return f"""---
-created: {stamp}
-tags:
-  - project
-fileClass: project
-hd:
-MondayCom_nr: "{project.id}"
-{_meta("Datalab_nr", project.prj_nr)}
-alias:
-{_meta("rol", project.role)}
-{_meta("projectstatus", project.status)}
-{_meta("start-project", project.start)}
-{_meta("eind-project", project.end)}
-tasks: true
----
-[[!d5_Projecten WDOD-MOC]]
-
-{CHASE_OR_SKIP}
-
-
-> [!info] status, rol en datums
->  Status: `&=choice(this.projectstatus, this.projectstatus, "")`
-> Rol: `&=choice(this.rol, this.rol, "")`
-> Startdatum: `&=choice(this.start-project, this.start-project, "")`
-> Einddatum: `&=choice(this.eind-project, this.eind-project, "")`
-
-# Doel en toelichting
-
-{_purpose(project)}
-
-# Project meta data
-
-## Betrokken
-
-{_line("Opdrachtgever", project.get("client"))}
-{_line("Gebruikers", "")}
-{_line("PO/Projectleider", project.trekker)}
-{_line("Specialisten", project.get("experts"))}
-{_line("Adviseurs", "")}
-{_line("Adviesbureaus", "")}
-
-## Locaties bestanden
-
-**Lokaal:**
-**Netwerk:**
-**Mail:**
-**Scripts:**
-**Modellen:**
-**GIS:**
-**Notities:**
-
-## Relevante project codes
-
-| Platform       | Code                                                |
-| -------------- | --------------------------------------------------- |
-| Datalab        | `&=choice(this.Datalab_nr, this.Datalab_nr, "")`     |
-| Monday.com     | `&=choice(this.MondayCom_nr, this.MondayCom_nr, "")` |
-| Jelle Deciamal | `&=choice(this.hd, this.hd, "")`                     |
-
-## Epic op monday.com
-
-{_meta_table(project)}
-
-# Overleggen en afspraken
-
-
-# Gerelateerde notities
-
-```dataview
-TABLE
-WHERE hd = this.hd AND file.name != this.file.name
-SORT file.name
-LIMIT 25
-```
-
-# Tasks
-
-> Import template 'Project afronding WDODelta' bij afsluiten project
-
-- [ ] zet project id in tabel en onder 'jd' en 'alias'. 🆔 mqjpKx
-- [ ] maak freefilesync aan van Obsidian note naar projectmap 🆔 pUFo5P
-"""
+    lines = _resolve_templater(template_text() if template is None else template, stamp)
+    lines = _fill_frontmatter(
+        lines,
+        {
+            "tags": ["project"],
+            # Quoted: a ten-digit item id is a number to YAML, and Dataview would render
+            # it in scientific notation. The vault's existing notes quote it too.
+            "MondayCom_nr": f'"{project.id}"',
+            "Datalab_nr": project.prj_nr,
+            "rol": project.role,
+            "projectstatus": project.status,
+            "start-project": project.start,
+            "eind-project": project.end,
+        },
+    )
+    lines = _fill_labels(
+        lines,
+        {
+            "Opdrachtgever": project.get("client"),
+            "PO/Projectleider": project.trekker,
+            "Specialisten": project.get("experts"),
+        },
+    )
+    at = _section_end(lines, META_HEADING)
+    lines[at:at] = ["", "## Epic op monday.com", "", _meta_table(project)]
+    if purpose := _purpose(project):
+        at = _section_end(lines, PURPOSE_HEADING)
+        lines[at:at] = ["", purpose]
+    return "\n".join(line.rstrip() for line in lines).rstrip() + "\n"
 
 
 def projects_dir(directory: str | None = None) -> Path:
