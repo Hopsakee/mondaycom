@@ -25,7 +25,6 @@ from mondaycom import queries
 from mondaycom.client import MondayClient
 from mondaycom.config import (
     CANCELLED_STATUSES,
-    DAM,
     DONE_STATUS,
     DUMMY_GROUPS,
     EPIC_BOARD,
@@ -33,11 +32,11 @@ from mondaycom.config import (
     EPIC_PRIORITIES,
     EPIC_STATUSES,
     IMPEDIMENT_STATUS,
-    NON_DAM,
     TASK_BOARDS,
     Board,
     as_number,
     item_url,
+    keeps_dam,
 )
 from mondaycom.sorting import Sorting, label_key
 
@@ -374,9 +373,7 @@ def matches(epic: Epic, f: Filters) -> bool:
         return False
     if f.priority and epic.priority != f.priority:
         return False
-    if f.dam == DAM and not epic.is_dam:
-        return False
-    if f.dam == NON_DAM and epic.is_dam:
+    if not keeps_dam(f.dam, epic.is_dam):
         return False
     if f.stuck and not epic.is_stuck:
         return False

@@ -24,6 +24,7 @@ from fasthtml import live_reload
 from fasthtml.common import (
     H2,
     H3,
+    H4,
     A,
     Button,
     Caption,
@@ -253,6 +254,14 @@ table.plan tr.layer-start td { border-top: 2px solid var(--hairline); }
 ul.left-out { font-size: .88rem; columns: 2 26rem; }
 ul.left-out li { break-inside: avoid; }
 ul.left-out small { color: var(--text-muted); margin-left: .4rem; }
+/* The page's own documentation: closed by default, a readable column when opened. */
+details.how { margin: .2rem 0 1rem; }
+details.how > summary { color: var(--pico-primary); font-size: .92rem; }
+details.how > div { max-width: 52rem; font-size: .9rem; }
+details.how h4 { font-size: .95rem; margin: 1rem 0 .3rem; }
+details.how p, details.how ul { margin-bottom: .5rem; }
+table.help td { padding: .3rem .5rem; vertical-align: top; font-size: .88rem; }
+table.help td:first-child { white-space: nowrap; }
 """
 
 # `this` is the header checkbox; the rows live in the same form.
@@ -563,7 +572,7 @@ def sprint_scope(person: str, dam: str, epic: str, kept: int, total: int) -> str
     if kept == total and not person and not dam and not epic:
         return ""
     parts = [person or "everyone"]
-    parts += [label.lower() for value, label in PORTFOLIO_LABELS if value == dam and value]
+    parts += [dam_label(dam).lower()] if dam_label(dam) else []
     if epic:
         parts.append(epic)
     line = f"{' · '.join(parts)} — {kept} of {total} tasks in the sprint group"
@@ -1460,16 +1469,27 @@ def planning_date_fields(start: str, end: str) -> Any:
     )
 
 
-def planning_filters(start: str, end: str, layers: tuple[str, ...]) -> Any:
-    """The window and the layers. Capacity always goes to the layers ahead first, so
-    ticking Backlog alone shows what is left of it once the promise is kept."""
+DAM_HELP = (
+    "DAM: epics linked to an item on the IV Portfolio board. Non-DAM: epics with no such link. "
+    "The load, the forecast and the Next sprint check all follow this filter."
+)
+
+
+def planning_filters(start: str, end: str, layers: tuple[str, ...], dam: str) -> Any:
+    """The window, the layers and the DAM half. Together they are the selection: only the
+    epics they pick take capacity, so every number below answers "can we do exactly this?"."""
     return Form(
         Div(
             planning_date_fields(start, end),
+            Label("Portfolio", portfolio_select(dam), title=DAM_HELP),
             Fieldset(
-                Legend("Show"),
+                Legend("Plan"),
                 *[
-                    Label(Input(type="checkbox", name="layer", value=key, checked=key in layers), label)
+                    Label(
+                        Input(type="checkbox", name="layer", value=key, checked=key in layers),
+                        label,
+                        title=planning.LAYER_HELP[key],
+                    )
                     for key, label in planning.LAYERS.items()
                 ],
                 cls="layers",
@@ -1512,71 +1532,147 @@ def _sprints(value: float | None) -> str:
     return "nobody" if value is None else f"{value:.1f}"
 
 
-def planning_tiles(p: planning.Plan, layers: tuple[str, ...]) -> Any:
+def dam_label(dam: str) -> str:
+    """The filter's label ("DAM only" / "Non-DAM only"), or empty when it is off — or set
+    to a value it does not know, which every DAM check treats as both (`config.keeps_dam`)."""
+    return next((label for value, label in PORTFOLIO_LABELS if value == dam and value), "")
+
+
+def selection_text(p: planning.Plan) -> str:
+    """The selection in words, for the heading: "Promised + Later · DAM only"."""
+    return " · ".join(filter(None, [planning.layers_text(p.layers), dam_label(p.dam)]))
+
+
+def planning_tiles(p: planning.Plan) -> Any:
     """The headline: how long the window is, what fits, what is late, who is the bottleneck."""
     w = p.window
-    shown = p.shown(layers)
-    counted = [q for q in shown if q.split.has_todo]
+    counted = [q for q in p.queue if q.split.has_todo]
     fitting = sum(1 for q in counted if q.fits(w))
-    late = sum(1 for q in shown if q.late)
+    late = sum(1 for q in p.queue if q.late)
     tiles = [
         chart.tile("Sprints", str(w.sprints), f"whole sprints, to {w.last_day}" if w.sprints else "none fit"),
         chart.tile("Epics that fit", f"{fitting} of {len(counted)}", "finish within the window"),
         chart.tile("Late", str(late), "against their own due date", "tone-critical" if late else ""),
     ]
-    heaviest = planning.most_overbooked(p, layers)
+    heaviest = planning.most_overbooked(p)
     if heaviest:
         top = heaviest[0]
-        load = top.load(layers, w.sprints)
+        load = top.load(w.sprints)
         text = "nobody" if load is None else f"{load:.0%}"
-        tiles.append(chart.tile("Most booked", text, f"{top.key} · {top.name}", f"tone-{load_tone(load)}"))
-    left_out = sum(1 for pr in p.problems if pr.layer in layers)
-    if left_out:
-        tiles.append(chart.tile("Left out", str(left_out), "epics to fix on monday.com", "tone-warning"))
+        tiles.append(
+            chart.tile(
+                "Most booked",
+                text,
+                f"{top.key} · {top.name}",
+                f"tone-{load_tone(load)}",
+                title="The selection's STP for this discipline, as a share of its capacity over the whole sprints",
+            )
+        )
+    if p.problems:
+        tiles.append(chart.tile("Left out", str(len(p.problems)), "epics to fix on monday.com", "tone-warning"))
     return Div(*tiles, cls="kpis")
 
 
-def discipline_table(p: planning.Plan, layers: tuple[str, ...]) -> Any:
+def discipline_table(p: planning.Plan) -> Any:
     """One row per discipline, heaviest first: who, how much they can do, how much there is."""
     sprints = p.window.sprints
     heads = [
         Th("Discipline"),
         Th("People"),
-        Th("STP / sprint", cls="tight"),
-        Th("Capacity", cls="tight"),
-        *[Th(label, cls="tight") for label in planning.LAYERS.values()],
-        Th("Queued", cls="tight"),
-        Th("Sprints needed", cls="tight"),
-        Th("Load", cls="tight"),
+        Th("STP / sprint", cls="tight", title="Σ STP per sprint × quarter availability × (1 − overhead)"),
+        Th("Capacity", cls="tight", title=f"STP / sprint × {sprints} whole sprints"),
+        *[Th(planning.LAYERS[key], cls="tight", title=planning.LAYER_HELP[key]) for key in p.layers],
+        Th("Total", cls="tight", title="Every STP the selection needs from this discipline"),
+        Th("Sprints needed", cls="tight", title="Total ÷ STP per sprint"),
+        Th("Load", cls="tight", title="Total ÷ capacity. Over 100% is overbooked"),
     ]
     rows = [
         Tr(
             Td(Strong(d.key), " ", Small(d.name)),
             Td(chart.people(", ".join(person.name for person in d.people)) if d.people else "—", cls="owner"),
             Td(f"{d.per_sprint:.1f}", cls="num tight"),
-            Td(f"{d.per_sprint * sprints:.1f}", cls="num tight"),
-            *[
-                Td(f"{d.demand.get(key, 0.0):.1f}" if d.demand.get(key) else "", cls="num tight")
-                for key in planning.LAYERS
-            ],
-            Td(Strong(f"{d.through(layers):.1f}"), cls="num tight"),
-            Td(f"{_sprints(d.sprints_needed(layers))} of {sprints}", cls="num tight"),
-            Td(chart.load_meter(d.through(layers), d.per_sprint * sprints), cls="tight progress"),
+            Td(f"{d.capacity(sprints):.1f}", cls="num tight"),
+            *[Td(f"{d.demand.get(key, 0.0):.1f}" if d.demand.get(key) else "", cls="num tight") for key in p.layers],
+            Td(Strong(f"{d.total:.1f}"), cls="num tight"),
+            Td(f"{_sprints(d.sprints_needed)} of {sprints}", cls="num tight"),
+            Td(chart.load_meter(d.total, d.capacity(sprints)), cls="tight progress"),
         )
-        for d in planning.most_overbooked(p, layers)
+        for d in planning.most_overbooked(p)
     ]
     return Div(
-        Table(
-            Caption(
-                "Queued is the layers shown plus every layer ahead of them: capacity goes to the promise first. "
-                "Capacity is STP × availability this quarter × (1 − overhead), over the whole sprints.",
-                cls="hint",
-            ),
-            Thead(Tr(*heads)),
-            Tbody(*rows),
-            cls="epics",
-        ),
+        Table(Thead(Tr(*heads)), Tbody(*rows), cls="epics"),
         cls="table-wrap",
+    )
+
+
+def how_it_works(p: planning.Plan) -> Any:
+    """The page's own documentation, with this selection's numbers in it.
+
+    Worked through on the heaviest discipline, so "122%" is never a number without a
+    sum behind it.
+    """
+    w = p.window
+    layer_rows = [Tr(Td(Strong(planning.LAYERS[key])), Td(planning.LAYER_HELP[key])) for key in planning.LAYERS]
+    heaviest = planning.most_overbooked(p)
+    example = None
+    if heaviest and w.sprints and heaviest[0].per_sprint:
+        d = heaviest[0]
+        load = d.load(w.sprints) or 0.0
+        example = P(
+            f"Worked out for {d.key}: {d.total:.1f} STP ÷ ({d.per_sprint:.1f} STP per sprint × {w.sprints} sprints "
+            f"= {d.capacity(w.sprints):.1f}) = {load:.0%}."
+        )
+    return Details(
+        Summary("How is this calculated?"),
+        Div(
+            H4("What is in each layer"),
+            P(
+                "The layer is decided by the epic's ",
+                Strong("group"),
+                " on the epic board, and its Due date against the quarter end you set. "
+                "The Status epic is shown but does not decide. Afgerond is never planned.",
+            ),
+            Table(Tbody(*layer_rows), cls="help"),
+            H4("What is counted"),
+            P(
+                "An epic counts when it is in a ticked layer, passes the Portfolio filter, and has a row on "
+                "Epics-STP-distribution that is linked to it with a split over DE / DB / DS / PO/AT adding up to "
+                "100%. Its work is that row's STP-TODO, exactly as monday.com computes it. Everything else is "
+                "listed under the epics as left out, with a link to fix it on monday.com."
+            ),
+            H4("How the load (overbooked %) is calculated"),
+            Ul(
+                Li(
+                    f"The window runs from {w.start} to the quarter end {w.end}. It holds {w.sprints} whole "
+                    f"three-week sprints, ending {w.last_day}; the days after that are not counted."
+                ),
+                Li(
+                    "Per person: STP per sprint × “Beschikbaar komend kwartaal” × (1 − Overhead), "
+                    "from the Capaciteit board. A discipline's STP per sprint is the sum over its people."
+                ),
+                Li("Capacity = STP per sprint × the number of whole sprints."),
+                Li("Total = the sum of every selected epic's STP-TODO × that discipline's percentage."),
+                Li(
+                    "Load = Total ÷ Capacity. Over 100% means the selection does not fit in the window. "
+                    "Only the selection takes capacity: work you did not tick is assumed not to be done."
+                ),
+            ),
+            example,
+            H4("How the forecast is calculated"),
+            P(
+                "The selected epics are queued by layer, then priority, then due date, then smallest first. "
+                "Each discipline works down the queue on its own, and nobody takes over another discipline's "
+                "share. An epic finishes in the sprint its slowest discipline gets through it; it is late when "
+                "that is after its own due date."
+            ),
+            H4("Next sprint"),
+            P(
+                "The open tasks in the sprint board's Next sprint group, split over the disciplines by their "
+                "epic's percentages, against “% beschikbaar komende sprint”. The Portfolio filter applies here; "
+                "the layers do not."
+            ),
+        ),
+        cls="how",
     )
 
 
@@ -1603,10 +1699,10 @@ def queue_row(q: planning.Planned, w: planning.Window, first_of_layer: bool) -> 
     )
 
 
-def queue_table(p: planning.Plan, layers: tuple[str, ...]) -> Any:
-    shown = p.shown(layers)
+def queue_table(p: planning.Plan) -> Any:
+    shown = p.queue
     if not shown:
-        return P("No epic in these layers has a usable split on Epics-STP-distribution yet.")
+        return P("No epic in this selection has a usable split on Epics-STP-distribution yet.")
     heads = ("Layer", "Epic", "Status epic", "Priority", "Due", "STP-TODO", "DE / DB / DS / PO", "Finish", "Forecast")
     rows = [queue_row(q, p.window, i == 0 or shown[i - 1].layer != q.layer) for i, q in enumerate(shown)]
     return Div(
@@ -1662,27 +1758,26 @@ def next_sprint_table(p: planning.Plan) -> Any:
     )
 
 
-def left_out(p: planning.Plan, layers: tuple[str, ...]) -> Any:
-    """The epics the plan could not count, each with a link to where it is fixed."""
-    problems = [pr for pr in p.problems if pr.layer in layers]
-    if not problems:
+def left_out(p: planning.Plan) -> Any:
+    """The epics in the selection the plan could not count, each with a link to the fix."""
+    if not p.problems:
         return None
     return Details(
-        Summary(f"{len(problems)} epics are left out of every number — fix them on monday.com"),
+        Summary(f"{len(p.problems)} epics are left out of every number — fix them on monday.com"),
         Ul(
             *[
                 Li(
                     A(pr.epic.name, href=pr.url, target="_blank", rel="noopener"),
                     Small(f"{planning.LAYERS[pr.layer]} · {pr.reason}"),
                 )
-                for pr in problems
+                for pr in p.problems
             ],
             cls="left-out",
         ),
     )
 
 
-def planning_section(p: planning.Plan, layers: tuple[str, ...]) -> Any:
+def planning_section(p: planning.Plan) -> Any:
     """Everything under the filters: tiles, disciplines, the queue, the next sprint, the gaps."""
     w = p.window
     unassigned = [
@@ -1691,21 +1786,25 @@ def planning_section(p: planning.Plan, layers: tuple[str, ...]) -> Any:
     ]
     return Div(
         H2(f"{w.start} – {w.end}"),
-        P(Small(" + ".join(planning.LAYERS[key] for key in layers)), cls="lede"),
-        planning_tiles(p, layers),
+        P(Small(selection_text(p)), cls="lede"),
+        how_it_works(p),
+        planning_tiles(p),
         Div(
             H3("Per discipline"),
             Small("heaviest load first · strict: nobody takes another discipline's share"),
             cls="section-head",
         ),
-        discipline_table(p, layers),
+        discipline_table(p),
         *unassigned,
         Div(H3("Epics"), Small("the finish is the sprint the slowest discipline gets through it"), cls="section-head"),
-        queue_table(p, layers),
-        left_out(p, layers),
+        queue_table(p),
+        left_out(p),
         Div(
             H3("Next sprint"),
-            Small(f"{p.next_sprint.tasks} open tasks in the Next sprint group · availability for the coming sprint"),
+            Small(
+                f"{p.next_sprint.tasks} open tasks in the Next sprint group · availability for the coming sprint"
+                + (f" · {dam_label(p.dam)}" if dam_label(p.dam) else "")
+            ),
             cls="section-head",
         ),
         next_sprint_table(p),
@@ -1715,18 +1814,18 @@ def planning_section(p: planning.Plan, layers: tuple[str, ...]) -> Any:
 
 
 @rt("/planning")
-def planning_page(start: str = "", end: str = "", layer: list[str] | None = None) -> Any:
+def planning_page(start: str = "", end: str = "", layer: list[str] | None = None, dam: str = ANY_PORTFOLIO) -> Any:
     """The planning. The numbers arrive on their own request, behind a spinner: a cold
     cache means reading the epic board and four smaller reads."""
     layers = planning.parse_layers(layer)
     return page(
         "Planning",
         lede("Planned STP per discipline against capacity, and which epics that lets us finish."),
-        planning_filters(start, end, layers),
+        planning_filters(start, end, layers, dam),
         Div(
             P(Small("Loading the planning boards…"), aria_busy="true"),
             id="planning",
-            hx_get=planning_view.to(start=start, end=end, layer=list(layers)),
+            hx_get=planning_view.to(start=start, end=end, layer=list(layers), dam=dam),
             hx_trigger="load",
             hx_swap="outerHTML",
         ),
@@ -1734,7 +1833,9 @@ def planning_page(start: str = "", end: str = "", layer: list[str] | None = None
 
 
 @rt
-def planning_view(start: str = "", end: str = "", layer: list[str] | None = None, refresh: int = 0) -> Any:
+def planning_view(
+    start: str = "", end: str = "", layer: list[str] | None = None, dam: str = ANY_PORTFOLIO, refresh: int = 0
+) -> Any:
     """The section under the filters. The dates ride back out of band, so the fields show
     the window the plan settled on rather than a blank."""
     layers = planning.parse_layers(layer)
@@ -1743,9 +1844,9 @@ def planning_view(start: str = "", end: str = "", layer: list[str] | None = None
         w = planning.window(snapshot.current_end, start=start, end=end)
     except FETCH_ERRORS as exc:
         return error(exc, id="planning")
-    p = planning.plan(snapshot, w)
+    p = planning.plan(snapshot, w, layers, dam)
     return (
-        planning_section(p, layers),
+        planning_section(p),
         planning_date_fields(str(w.start), str(w.end))(hx_swap_oob="true"),
     )
 

@@ -40,6 +40,7 @@ uv run monday portfolio --stuck             # only the items with a blocked epic
 uv run monday planning                      # load per discipline, and which epics fit the quarter
 uv run monday planning --layer all          # promised + later + backlog
 uv run monday planning --end 2027-03-31     # plan to another quarter end
+uv run monday planning --dam dam            # only epics in the IV Portfolio
 uv run monday project DPR-223               # write an Obsidian project note for one epic
 uv run monday project 223 --stdout          # same epic, printed instead of written
 uv run monday project 2617136005 --out .    # by monday.com item id, into this directory
@@ -120,7 +121,10 @@ team's capacity for a window you set — by default from the day after the curre
 to the end of that quarter, in whole sprints. It shows which discipline is most
 overbooked, how many sprints each needs, a forecast finish per epic, and the load of the
 Next sprint group against next sprint's availability. Tick **Promised**, **Later** and
-**Backlog** to choose what to show; capacity always goes to the promise first.
+**Backlog** and pick **DAM** / **Non-DAM** / both to choose what to plan: only that
+selection takes capacity, so the overbooked percentage answers "could we do exactly
+this before the quarter end?". Hover a checkbox for what it holds, or open **How is this
+calculated?** on the page.
 
 Both pages carry a **Stuck** column. It is empty while things run; when an epic sits on
 *Impediment*, or a task of it does, it shows a red marker you can open to get the epic
@@ -202,9 +206,13 @@ overhead. A person's capacity per sprint is `STP × available% × (1 − overhea
 - **Promised** is an Actief or Bespreken epic (the epic board's group) due on or before
   the quarter end, or with no due date. **Later** is the same groups due after it.
   **Backlog** is the Backlog group.
-- The queue runs Promised → Later → Backlog, and within a layer by priority, due date,
-  then smallest first. Each discipline works down it on its own; an epic finishes in the
-  sprint its slowest share does, and is **late** when that is after its due date.
+- The load per discipline is the selection's STP (STP-TODO × the discipline's %)
+  divided by its capacity: STP per sprint × the whole sprints between the start and the
+  quarter end. Over 100% is overbooked.
+- The selected epics are queued Promised → Later → Backlog, and within a layer by
+  priority, due date, then smallest first. Each discipline works down it on its own; an
+  epic finishes in the sprint its slowest share does, and is **late** when that is after
+  its due date.
 - Only epics with a linked row and a split that adds up to 100% are counted. Everything
   else is listed under the queue as something to fix on monday.com — nothing is matched
   by name and no default split is assumed.

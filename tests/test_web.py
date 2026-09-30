@@ -948,7 +948,14 @@ PLAN = pl.Snapshot(
         ),
     ],
     epics=[
-        pl.PlanEpic(id="e1", name="Waterbalans", group=EPIC_GROUP_ACTIVE, status="Working on it", priority="High"),
+        pl.PlanEpic(
+            id="e1",
+            name="Waterbalans",
+            group=EPIC_GROUP_ACTIVE,
+            status="Working on it",
+            priority="High",
+            portfolio_ids=("p1",),
+        ),
         pl.PlanEpic(id="e2", name="Backlogding", group=EPIC_GROUP_BACKLOG, priority="Low"),
         pl.PlanEpic(id="e3", name="Nog niet gekoppeld", group=EPIC_GROUP_ACTIVE, priority="High"),
     ],
@@ -1013,3 +1020,38 @@ def test_planning_view_reports_a_failed_fetch(client: TestClient, monkeypatch: p
     web._PLANNING.clear()
     html = client.get("/planning_view", headers=HTMX).text
     assert "complexity budget exhausted" in html
+
+
+def test_planning_dam_filter_scopes_the_queue_and_the_load(planned: TestClient) -> None:
+    window = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
+    dam = planned.get("/planning_view", params={**window, "dam": DAM}, headers=HTMX).text
+    assert "Waterbalans" in dam and "Backlogding" not in dam
+    assert "DAM only" in dam
+    non_dam = planned.get("/planning_view", params={**window, "dam": NON_DAM}, headers=HTMX).text
+    epics_part = non_dam.split("Epics</h3>")[1].split("Next sprint")[0]
+    assert "Backlogding" in epics_part and "Waterbalans" not in epics_part
+    # Only the selection takes capacity: 5 DE points of 20, not the 45 of both halves.
+    assert "25%" in non_dam and "% · overbooked" not in non_dam
+
+
+def test_planning_explains_itself_with_the_selections_own_numbers(planned: TestClient) -> None:
+    html = planned.get("/planning_view", params={"start": "2026-10-05", "end": "2026-11-18"}, headers=HTMX).text
+    assert "How is this calculated?" in html
+    assert "Worked out for DE: 40.0 STP ÷ (10.0 STP per sprint × 2 sprints = 20.0) = 200%." in html
+    for help_text in pl.LAYER_HELP.values():
+        assert help_text in html
+
+
+def test_planning_layer_checkboxes_carry_their_definition_on_hover(planned: TestClient) -> None:
+    html = planned.get("/planning").text
+    assert f'title="{pl.LAYER_HELP[pl.PROMISED]}"' in html
+    assert 'name="dam"' in html
+
+
+def test_planning_treats_an_unknown_dam_value_as_both(planned: TestClient) -> None:
+    params = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"], "dam": "DAM"}
+    response = planned.get("/planning_view", params=params, headers=HTMX)
+    assert response.status_code == 200
+    assert "Waterbalans" in response.text and "Backlogding" in response.text
+    assert "only" not in response.text.split('class="lede"')[1].split("</p>")[0]
+    assert planned.get("/planning", params={"dam": "DAM"}).status_code == 200

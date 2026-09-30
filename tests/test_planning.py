@@ -11,11 +11,13 @@ from mondaycom import burndown as bd
 from mondaycom import planning as pl
 from mondaycom.config import (
     CAPACITY_BOARD,
+    DAM,
     DISTRIBUTION_BOARD,
     EPIC_BOARD,
     EPIC_GROUP_ACTIVE,
     EPIC_GROUP_BACKLOG,
     EPIC_GROUP_DISCUSS,
+    NON_DAM,
 )
 
 DEFAULT = {"DE": 35.0, "DB": 30.0, "DS": 25.0, "PO/AT": 10.0}
@@ -106,7 +108,7 @@ def test_person_from_item() -> None:
     assert (p.role, p.stp, p.sprint_available, p.quarter_available, p.overhead) == ("DE", 16, 100, 90, 10)
 
 
-def test_plan_epic_from_item_reads_group_and_due_date() -> None:
+def test_plan_epic_from_item_reads_group_due_date_and_portfolio() -> None:
     cols = EPIC_BOARD.columns
     item = {
         "id": 7,
@@ -116,10 +118,12 @@ def test_plan_epic_from_item_reads_group_and_due_date() -> None:
             {"id": cols["status"], "text": "Working on it"},
             {"id": cols["priority"], "text": "High"},
             {"id": cols["due_date"], "text": "2026-12-31"},
+            {"id": cols["portfolio"], "text": None, "linked_item_ids": ["5097962811"]},
         ],
     }
     e = pl.PlanEpic.from_item(item)
     assert (e.group, e.group_title, e.due) == (EPIC_GROUP_ACTIVE, "Actief", date(2026, 12, 31))
+    assert e.is_dam
 
 
 # --- the window -------------------------------------------------------------------------
@@ -206,7 +210,9 @@ def test_queue_order_is_layer_priority_due_date_then_smallest() -> None:
         epic("no-prio", priority=""),
     ]
     sizes = {"high-big": 30, "high-small": 3}
-    p = pl.plan(snapshot(epics, [split(e.id, sizes.get(e.id, 10)) for e in epics]), WINDOW)
+    p = pl.plan(
+        snapshot(epics, [split(e.id, sizes.get(e.id, 10)) for e in epics]), WINDOW, (pl.PROMISED, pl.LATER, pl.BACKLOG)
+    )
     assert [q.epic.id for q in p.queue] == [
         "high-due",
         "high-small",
@@ -249,8 +255,8 @@ def test_nobody_in_a_discipline_means_no_capacity() -> None:
     assert q.finish_sprint is None
     assert q.verdict(WINDOW) == ("no capacity", "critical")
     ds = next(d for d in p.disciplines if d.key == "DS")
-    assert ds.sprints_needed((pl.PROMISED,)) is None
-    assert ds.load((pl.PROMISED,), WINDOW.sprints) is None
+    assert ds.sprints_needed is None
+    assert ds.load(WINDOW.sprints) is None
 
 
 def test_late_against_the_epics_own_due_date() -> None:
@@ -274,24 +280,61 @@ def test_an_empty_stp_todo_is_flagged_not_counted_as_done() -> None:
     assert p.queue[0].verdict(WINDOW) == ("no STP-TODO", "neutral")
 
 
-def test_discipline_demand_load_and_what_queues_ahead() -> None:
+def de_of(p: pl.Plan) -> pl.Discipline:
+    return next(d for d in p.disciplines if d.key == "DE")
+
+
+def test_the_load_is_exactly_the_selection() -> None:
     epics = [epic("a"), epic("b", due=date(2027, 1, 31)), epic("c", group=EPIC_GROUP_BACKLOG)]
     splits = [split("a", 10, {"DE": 100}), split("b", 20, {"DE": 100}), split("c", 30, {"DE": 100})]
-    p = pl.plan(snapshot(epics, splits), WINDOW)
-    de = next(d for d in p.disciplines if d.key == "DE")
-    assert de.demand == {pl.PROMISED: 10, pl.LATER: 20, pl.BACKLOG: 30}
-    assert de.through((pl.PROMISED,)) == 10
-    # Backlog alone still queues behind the promise and the later work.
-    assert de.through((pl.BACKLOG,)) == 60
-    assert de.sprints_needed((pl.PROMISED,)) == 1
-    assert de.load((pl.PROMISED, pl.LATER, pl.BACKLOG), WINDOW.sprints) == 3
+    snap = snapshot(epics, splits)
+
+    everything = de_of(pl.plan(snap, WINDOW, (pl.PROMISED, pl.LATER, pl.BACKLOG)))
+    assert everything.demand == {pl.PROMISED: 10, pl.LATER: 20, pl.BACKLOG: 30}
+    assert everything.load(WINDOW.sprints) == 3
+
+    promised = de_of(pl.plan(snap, WINDOW))
+    assert promised.total == 10
+    assert promised.sprints_needed == 1
+    assert promised.load(WINDOW.sprints) == 0.5
+
+    # Backlog alone is the backlog alone: nothing outside the selection takes capacity.
+    backlog = pl.plan(snap, WINDOW, (pl.BACKLOG,))
+    assert de_of(backlog).total == 30
+    assert [(q.epic.id, q.finish_sprint) for q in backlog.queue] == [("c", 3)]
+
+
+def test_the_dam_filter_narrows_queue_load_problems_and_next_sprint() -> None:
+    dam_epic = pl.PlanEpic(id="d", name="DAM", group=EPIC_GROUP_ACTIVE, portfolio_ids=("p1",))
+    unlinked_dam = pl.PlanEpic(id="u", name="DAM, no split", group=EPIC_GROUP_ACTIVE, portfolio_ids=("p1",))
+    snap = snapshot([dam_epic, unlinked_dam, epic("n")], [split("d", 10, {"DE": 100}), split("n", 30, {"DE": 100})])
+    snap.next_sprint = [
+        bd.SprintItem(id="1", name="t1", points=4, status="To Do", epic_id="d"),
+        bd.SprintItem(id="2", name="t2", points=6, status="To Do", epic_id="n"),
+        bd.SprintItem(id="3", name="t3", points=2, status="To Do"),
+    ]
+
+    dam = pl.plan(snap, WINDOW, dam=DAM)
+    assert [q.epic.id for q in dam.queue] == ["d"]
+    assert de_of(dam).total == 10
+    assert [pr.epic.id for pr in dam.problems] == ["u"]
+    assert dam.next_sprint.load["DE"] == 4
+
+    non_dam = pl.plan(snap, WINDOW, dam=NON_DAM)
+    assert [q.epic.id for q in non_dam.queue] == ["n"]
+    assert non_dam.problems == []
+    # A task with no epic is non-DAM, and has no split to put it on a discipline.
+    assert (non_dam.next_sprint.load["DE"], non_dam.next_sprint.unplaced) == (6, 2)
+
+    both = pl.plan(snap, WINDOW)
+    assert de_of(both).total == 40
 
 
 def test_most_overbooked_puts_the_heaviest_first_and_empty_last() -> None:
     epics = [epic("a")]
     splits = [split("a", 30, {"DE": 80, "DB": 20})]
     p = pl.plan(snapshot(epics, splits, [person("A", "DE"), person("B", "DB"), person("C", "DS")]), WINDOW)
-    order = [d.key for d in pl.most_overbooked(p, (pl.PROMISED,))]
+    order = [d.key for d in pl.most_overbooked(p)]
     # PO/AT has nobody and no work: load 0, not "nobody", so it does not lead.
     assert order[:2] == ["DE", "DB"]
 

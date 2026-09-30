@@ -381,12 +381,13 @@ def capacity_rows(board: Board = CAPACITY_BOARD) -> str:
 
 
 def planning_epics(board: Board = EPIC_BOARD, cursor: str | None = None) -> str:
-    """Every epic with what the planning needs: its group, status, priority and due date.
+    """Every epic with what the planning needs: group, status, priority, due date, portfolio.
 
     The group is the planning layer (Actief / Bespreken / Backlog), which is why this is
-    not `epic_rows`: the overview pages have no use for it.
+    not `epic_rows`: the overview pages have no use for it. The portfolio link is the DAM
+    filter.
     """
-    columns = json.dumps([board.column(a) for a in ("status", "priority", "due_date")])
+    columns = json.dumps([board.column(a) for a in ("status", "priority", "due_date", "portfolio")])
     return dedent(f"""
         query {{
             boards(ids: [{board.id}]) {{
@@ -399,6 +400,9 @@ def planning_epics(board: Board = EPIC_BOARD, cursor: str | None = None) -> str:
                         column_values(ids: {columns}) {{
                             id
                             text
+                            ... on BoardRelationValue {{
+                                linked_item_ids
+                            }}
                         }}
                     }}
                 }}
