@@ -323,6 +323,21 @@ PORTFOLIO_URGENCIES = ["Hoog", "Middel", "Laag"]
 DAM = "dam"
 NON_DAM = "non-dam"
 
+
+def keeps_dam(dam: str, is_dam: bool) -> bool:
+    """Whether something that is (or is not) DAM survives the DAM filter `dam`.
+
+    The one place the rule lives, for epics and tasks alike: `DAM` keeps the linked,
+    `NON_DAM` the unlinked, and anything else — empty, or a value typed into a query
+    string — keeps both.
+    """
+    if dam == DAM:
+        return is_dam
+    if dam == NON_DAM:
+        return not is_dam
+    return True
+
+
 # People filters compare against "person-<user id>"; this is the one literal monday.com
 # also accepts, and it resolves to whoever owns the API token.
 ASSIGNED_TO_ME = "assigned_to_me"

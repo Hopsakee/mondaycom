@@ -301,41 +301,43 @@ def cmd_planning(args: argparse.Namespace) -> int:
     layers = planning.parse_layers(list(planning.LAYERS) if "all" in (args.layer or []) else args.layer)
     with MondayClient() as client:
         snapshot = planning.fetch(client)
+    dam = DAM_CHOICES[args.dam]
     window = planning.window(snapshot.current_end, start=args.start or "", end=args.end or "")
-    plan = planning.plan(snapshot, window)
+    plan = planning.plan(snapshot, window, layers, dam)
     sprints = window.sprints
 
+    scope = planning.layers_text(layers).lower()
     print(
         f"Planning {window.start} – {window.end} · {sprints} whole sprints"
         + (f" (to {window.last_day})" if sprints else "")
-        + f" · {' + '.join(planning.LAYERS[layer] for layer in layers).lower()}"
+        + f" · {scope}"
+        + (f" · {args.dam} only" if dam else "")
     )
     print()
-    heads = "".join(f"{planning.LAYERS[layer].lower():>9}" for layer in planning.LAYERS)
+    heads = "".join(f"{planning.LAYERS[layer].lower():>9}" for layer in layers)
     print(f"{'discipline':<22} {'people':>6} {'STP/spr':>8} {'capacity':>9}{heads}", end="")
-    print(f" {'queued':>8} {'sprints':>8} {'load':>6}")
-    for d in planning.most_overbooked(plan, layers):
-        demand = "".join(f"{bd.fmt(round(d.demand.get(layer, 0.0), 1)):>9}" for layer in planning.LAYERS)
+    print(f" {'total':>8} {'sprints':>8} {'load':>6}")
+    for d in planning.most_overbooked(plan):
+        demand = "".join(f"{bd.fmt(round(d.demand.get(layer, 0.0), 1)):>9}" for layer in layers)
         print(
-            f"{d.key + ' ' + d.name:<22.22} {len(d.people):>6} {d.per_sprint:>8.1f} {d.per_sprint * sprints:>9.1f}"
-            f"{demand} {d.through(layers):>8.1f} {_sprints(d.sprints_needed(layers)):>8} "
-            f"{_load(d.load(layers, sprints)):>6}"
+            f"{d.key + ' ' + d.name:<22.22} {len(d.people):>6} {d.per_sprint:>8.1f} {d.capacity(sprints):>9.1f}"
+            f"{demand} {d.total:>8.1f} {_sprints(d.sprints_needed):>8} {_load(d.load(sprints)):>6}"
         )
-    print("queued = the layers shown plus every layer ahead of them in the queue")
+    print(f"load = the selection's STP ÷ (STP per sprint × {sprints} whole sprints); over 100% is overbooked")
 
-    shown = plan.shown(layers)
     print()
     print(f"{'layer':<9} {'priority':<10} {'due':<10} {'todo':>6}  {'finish':<10}  {'forecast':<17} epic")
-    for p in shown:
+    for p in plan.queue:
         verdict, _ = p.verdict(window)
         print(
             f"{p.layer:<9} {p.epic.priority[:9]:<10} {str(p.epic.due or ''):<10} {bd.fmt(p.todo):>6}  "
             f"{str(p.finish or ''):<10}  {verdict:<17} {p.epic.name}"
         )
-    fitting = sum(1 for p in shown if p.fits(window) and p.split.has_todo)
-    late = sum(1 for p in shown if p.late)
+    fitting = sum(1 for p in plan.queue if p.fits(window) and p.split.has_todo)
+    late = sum(1 for p in plan.queue if p.late)
     print()
-    print(f"{fitting} of {len(shown)} epics finish within the {sprints} sprints · {late} late against their due date")
+    print(f"{fitting} of {len(plan.queue)} epics finish within the {sprints} sprints", end="")
+    print(f" · {late} late against their due date")
 
     nxt = plan.next_sprint
     print()
@@ -348,11 +350,10 @@ def cmd_planning(args: argparse.Namespace) -> int:
 
     for person in plan.unassigned_people:
         print(f"note: {person.name} on Capaciteit has role {person.role or '(none)'!r}, which is no discipline")
-    problems = [pr for pr in plan.problems if pr.layer in layers]
-    if problems:
+    if plan.problems:
         print()
-        print(f"{len(problems)} epics are left out — fix them on monday.com:")
-        for pr in problems:
+        print(f"{len(plan.problems)} epics are left out — fix them on monday.com:")
+        for pr in plan.problems:
             print(f"  {pr.layer:<9} {pr.reason:<38} {pr.epic.name} — {pr.url}")
     return 0
 
@@ -418,7 +419,7 @@ def cmd_query(args: argparse.Namespace) -> int:
 
 
 def _add_dam(p: argparse.ArgumentParser) -> None:
-    """The DAM half-of-the-board filter, which three commands offer on the same terms."""
+    """The DAM half-of-the-board filter, which four commands offer on the same terms."""
     p.add_argument(
         "--dam",
         default="all",
@@ -498,9 +499,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--layer",
         action="append",
         choices=[*planning.LAYERS, "all"],
-        help="which epics to show: promised (default), later, backlog, or all; repeatable. "
-        "Capacity always goes to the layers ahead first",
+        help="which epics to plan: promised (default), later, backlog, or all; repeatable. "
+        "Only the selection takes capacity",
     )
+    _add_dam(p)
     p.set_defaults(func=cmd_planning)
 
     p = subs.add_parser("project", help="write an Obsidian project note for one epic")

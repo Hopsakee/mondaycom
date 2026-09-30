@@ -14,10 +14,12 @@ epic is planned in, by its group and its due date.
   mirror's members, because a mirror answers ``"19, 3, 1"`` rather than 23.
 - **Layers.** *Promised* is Actief or Bespreken, due on or before the quarter end (or
   with no due date). *Later* is Actief or Bespreken due after it. *Backlog* is Backlog.
-- **One queue.** Capacity goes to the layers in that order, and within a layer by
-  priority, then due date, then smallest first. Each discipline works down the queue on
-  its own, and an epic is finished in the sprint its *last* discipline share is — so a
-  backlog forecast is always what is left once the promise is kept.
+- **The selection is the plan.** The layers ticked and the DAM filter pick the epics;
+  the load and the forecast answer "if we do exactly this in the window, how far are we
+  overbooked, and what finishes when?". Nothing outside the selection takes capacity.
+- **One queue.** The selected epics in layer order, and within a layer by priority, then
+  due date, then smallest first. Each discipline works down the queue on its own, and an
+  epic is finished in the sprint its *last* discipline share is.
 - **Strict per discipline.** DE work waits for DE capacity; nobody absorbs another
   discipline's share.
 - **Capacity** per person per sprint is ``STP × available% × (1 − overhead%)``, with
@@ -50,6 +52,7 @@ from mondaycom.config import (
     Board,
     as_number,
     item_url,
+    keeps_dam,
 )
 from mondaycom.config import DISCIPLINE_NAMES as DISCIPLINE_NAMES  # the page and the CLI read them here
 from mondaycom.config import DISCIPLINES as DISCIPLINES
@@ -64,6 +67,17 @@ LAYERS = {
     PROMISED: "Promised",
     LATER: "Later",
     BACKLOG: "Backlog",
+}
+
+#: What each layer holds, in the words the page's hover text and help panel use. The
+#: group is the epic board's own group, not its "Status epic" — the status is shown, it
+#: does not decide.
+LAYER_HELP = {
+    PROMISED: "Epics in the Actief or Bespreken group on the epic board, due on or before the quarter end "
+    "or with no due date: what we have promised to do this quarter.",
+    LATER: "Epics in the Actief or Bespreken group whose due date lies after the quarter end: "
+    "running, but not promised for this quarter.",
+    BACKLOG: "Epics in the Backlog group on the epic board, whatever their due date: what we could be doing next.",
 }
 
 #: A split within half a percent of 100 is 100: `33.3 + 33.3 + 33.4` is a valid split.
@@ -198,15 +212,17 @@ class PlanEpic:
     status: str = ""
     priority: str = ""
     due: date | None = None
+    #: The IV Portfolio items it links to. Linked at all is what makes an epic DAM.
+    portfolio_ids: tuple[str, ...] = ()
 
     @property
     def url(self) -> str:
         return item_url(EPIC_BOARD, self.id)
 
     @property
-    def is_planned(self) -> bool:
-        """In one of the groups the planning reads — Actief, Bespreken or Backlog."""
-        return self.group in PROMISED_GROUPS or self.group == EPIC_GROUP_BACKLOG
+    def is_dam(self) -> bool:
+        """Linked to the IV Portfolio board — the epic board's own DAM formula."""
+        return bool(self.portfolio_ids)
 
     def layer(self, quarter_end: date) -> str:
         """Which layer the epic is planned in, or empty when it is not planned at all."""
@@ -226,6 +242,7 @@ class PlanEpic:
             status=cells.text("status"),
             priority=cells.text("priority"),
             due=as_date(cells.text("due_date")),
+            portfolio_ids=cells.linked("portfolio"),
         )
 
 
@@ -323,7 +340,7 @@ class Discipline:
 
     key: str
     people: list[Person] = field(default_factory=list)
-    #: Points needed per layer, from the epics with a valid split.
+    #: Points the selection needs from this discipline, per layer.
     demand: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -335,30 +352,29 @@ class Discipline:
         return sum(p.per_sprint for p in self.people)
 
     @property
-    def next_sprint(self) -> float:
-        return sum(p.next_sprint for p in self.people)
+    def total(self) -> float:
+        """Every point the selection needs from this discipline."""
+        return sum(self.demand.values())
 
-    def through(self, layers: tuple[str, ...]) -> float:
-        """The points queued up to and including the last of `layers` — everything ahead
-        of a layer counts, because capacity goes to it first."""
-        order = list(LAYERS)
-        last = max((order.index(layer) for layer in layers), default=-1)
-        return sum(self.demand.get(layer, 0.0) for layer in order[: last + 1])
-
-    def sprints_needed(self, layers: tuple[str, ...]) -> float | None:
-        """Sprints to clear the queue through `layers`. `None` when nobody does this work."""
-        points = self.through(layers)
-        if not points:
+    @property
+    def sprints_needed(self) -> float | None:
+        """Sprints to get through the selection. `None` when nobody does this work."""
+        total = self.total
+        if not total:
             return 0.0
-        return points / self.per_sprint if self.per_sprint else None
+        return total / self.per_sprint if self.per_sprint else None
 
-    def load(self, layers: tuple[str, ...], sprints: int) -> float | None:
-        """Queued points as a fraction of what the window holds. Above 1 is overbooked."""
-        capacity = self.per_sprint * sprints
-        points = self.through(layers)
+    def capacity(self, sprints: int) -> float:
+        """What the discipline can do in `sprints` whole sprints."""
+        return self.per_sprint * sprints
+
+    def load(self, sprints: int) -> float | None:
+        """The selection's points as a fraction of what the window holds. Above 1 is
+        overbooked; `None` is work with nobody to do it."""
+        capacity = self.capacity(sprints)
         if not capacity:
-            return None if points else 0.0
-        return points / capacity
+            return None if self.total else 0.0
+        return self.total / capacity
 
 
 @dataclass
@@ -426,7 +442,8 @@ class NextSprint:
 
 @dataclass
 class Plan:
-    """The whole answer: the window, the disciplines, the queue and what it left out."""
+    """The whole answer for one selection: the window, the disciplines, the queue, and
+    the epics in the selection it had to leave out."""
 
     window: Window
     disciplines: list[Discipline]
@@ -435,12 +452,8 @@ class Plan:
     next_sprint: NextSprint
     #: People on Capaciteit whose role is not one of the four disciplines.
     unassigned_people: list[Person] = field(default_factory=list)
-
-    def layer(self, layer: str) -> list[Planned]:
-        return [p for p in self.queue if p.layer == layer]
-
-    def shown(self, layers: tuple[str, ...]) -> list[Planned]:
-        return [p for p in self.queue if p.layer in layers]
+    layers: tuple[str, ...] = ()
+    dam: str = ""
 
 
 def queue_key(p: Planned) -> tuple[Any, ...]:
@@ -480,12 +493,17 @@ def forecast(queue: list[Planned], disciplines: list[Discipline], w: Window) -> 
         p.finish = w.sprint_end(finish) if finish else None
 
 
-def next_sprint(snapshot: Snapshot, splits: dict[str, Split]) -> NextSprint:
-    """Weigh the Next sprint group per discipline, by each task's epic split."""
+def next_sprint(snapshot: Snapshot, splits: dict[str, Split], dam: str = "") -> NextSprint:
+    """Weigh the Next sprint group per discipline, by each task's epic split.
+
+    The DAM filter applies — a task with no epic is non-DAM — but the layers do not: the
+    group is what the next sprint holds, whatever layer its epics sit in.
+    """
+    dam_epics = frozenset(e.id for e in snapshot.epics if e.is_dam) if dam else frozenset()
     load = dict.fromkeys(DISCIPLINES, 0.0)
     unplaced = 0.0
     tasks = 0
-    for item in snapshot.next_sprint:
+    for item in bd.narrow(snapshot.next_sprint, dam=dam, dam_epics=dam_epics):
         if item.status == DONE_STATUS or item.status in CANCELLED_STATUSES or not item.points:
             continue
         tasks += 1
@@ -499,8 +517,12 @@ def next_sprint(snapshot: Snapshot, splits: dict[str, Split]) -> NextSprint:
     return NextSprint(capacity=capacity, load=load, unplaced=unplaced, tasks=tasks)
 
 
-def plan(snapshot: Snapshot, w: Window) -> Plan:
-    """Put every planned epic in its layer, queue them, and forecast the queue."""
+def plan(snapshot: Snapshot, w: Window, layers: tuple[str, ...] = (PROMISED,), dam: str = "") -> Plan:
+    """Queue the selected epics, forecast them, and weigh them against capacity.
+
+    The selection is every epic in one of `layers` that passes the DAM filter. Only
+    those take capacity, so the load answers "can we do exactly this in the window?".
+    """
     # First valid link wins; a second row on the same epic would count its work twice.
     splits: dict[str, Split] = {}
     bad: dict[str, Split] = {}
@@ -516,7 +538,7 @@ def plan(snapshot: Snapshot, w: Window) -> Plan:
     problems: list[Problem] = []
     for epic in snapshot.epics:
         layer = epic.layer(w.end)
-        if not layer:
+        if layer not in layers or not keeps_dam(dam, epic.is_dam):
             continue
         split = splits.get(epic.id)
         if split is not None:
@@ -539,9 +561,16 @@ def plan(snapshot: Snapshot, w: Window) -> Plan:
         disciplines=disciplines,
         queue=queue,
         problems=problems,
-        next_sprint=next_sprint(snapshot, splits),
+        next_sprint=next_sprint(snapshot, splits, dam),
         unassigned_people=[p for p in snapshot.people if p.role not in DISCIPLINES],
+        layers=layers,
+        dam=dam,
     )
+
+
+def layers_text(layers: tuple[str, ...]) -> str:
+    """The layers in words, as both front-ends print them: "Promised + Backlog"."""
+    return " + ".join(LAYERS[layer] for layer in layers)
 
 
 def parse_layers(values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -550,11 +579,11 @@ def parse_layers(values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
     return picked or (PROMISED,)
 
 
-def most_overbooked(p: Plan, layers: tuple[str, ...]) -> list[Discipline]:
+def most_overbooked(p: Plan) -> list[Discipline]:
     """The disciplines, heaviest load first. Nobody to do the work sorts on top."""
 
     def key(d: Discipline) -> float:
-        load = d.load(layers, p.window.sprints)
+        load = d.load(p.window.sprints)
         return -math.inf if load is None else -load
 
     return sorted(p.disciplines, key=key)

@@ -40,6 +40,7 @@ uv run monday portfolio --item "EBO EIS"   # one item: its fields and every epic
 uv run monday portfolio --stuck --empty    # only blocked items / also the ones with no epics
 uv run monday planning              # load per discipline vs capacity, which epics fit the quarter
 uv run monday planning --layer all --end 2027-03-31   # every layer, to another quarter end
+uv run monday planning --dam dam --layer backlog       # only the DAM backlog: would that fit?
 uv run monday project DPR-223        # write an Obsidian project note for one epic
 uv run monday project 223 --stdout   # same epic, printed instead of written
 uv run monday project 2617136005 --out . --force   # by item id, into this directory
@@ -418,7 +419,7 @@ formula. Today that splits the board 42 / 233.
 
 `monday planning` and `/planning` answer "how much work does each discipline have, how
 much can it do, and which epics does that let us finish?". Every rule below was agreed
-with Jelle on 2026-09-28; ask before changing one.
+with Jelle on 2026-09-28 and 2026-09-30; ask before changing one.
 
 - **Two boards of its own.** Epics-STP-distribution (`5105081537`): one row per epic,
   linked by `board_relation_mm7m2g0t`, with STP-TODO (`lookup_mm7m50j4`, a mirror of the
@@ -435,15 +436,22 @@ with Jelle on 2026-09-28; ask before changing one.
 - **Layers come from the epic board's group, not the distribution board's.** Promised is
   Actief/Bespreken due on or before the quarter end (or undated); Later is those groups
   due after it; Backlog is Backlog, *whatever its due date*. Afgerond is not planned.
-- **One queue**: Promised → Later → Backlog, then priority, due date, smallest first.
-  Showing Backlog alone still queues it behind the rest ("could we also do these?"),
-  so a discipline's *Queued* is the layers shown plus every layer ahead of them.
+- **The selection is the plan.** The ticked layers and the DAM filter (DAM / non-DAM /
+  both, the epic's portfolio link as everywhere) pick the epics, and *only those* take
+  capacity: the load is "if we do exactly this in the window, how far over are we?".
+  Backlog alone means the backlog alone. This replaced an earlier rule where a later
+  layer counted the layers ahead of it — do not bring that back.
+- **One queue** of the selection: Promised → Later → Backlog, then priority, due date,
+  smallest first. The forecast runs on that queue, so it answers the same question.
 - **Strict per discipline.** Each works down the queue on its own; an epic finishes in
   the sprint its slowest share does (`planning.forecast`). A discipline with work and
   nobody to do it is "no capacity", never a division by zero.
 - **Capacity** per person per sprint is `STP × available% × (1 − overhead%)`. The plan
   uses the quarter availability for every sprint; the sprint availability feeds only the
   Next sprint check, which weighs the "Next sprint" group's open tasks by their epic split.
+  The DAM filter applies to that check (a task with no epic is non-DAM); the layers do not.
+- **Load = Total ÷ Capacity**, per discipline: Total is Σ STP-TODO × the discipline's %
+  over the selection, Capacity is STP per sprint × the whole sprints in the window.
 - **Whole sprints only.** The window starts the day after the current sprint (the
   Sprint page's guess) and ends on the last day of the quarter the *first sprint ends
   in* — on 28 September that plans Q4, not the two days left of Q3. Both are settable.
@@ -451,6 +459,11 @@ with Jelle on 2026-09-28; ask before changing one.
   it per request. The load meter is `chart.load_meter`: the battery's track on a fixed
   0–150% scale, a tick at capacity, the overflow in the critical tone and "overbooked"
   in words.
+- **The page documents itself.** Each layer checkbox, the Portfolio filter and the table
+  headers carry a `title` hover; "How is this calculated?" (`web.how_it_works`) spells out
+  the layers, what is counted and the load formula, with the selection's own dates and a
+  worked example on the heaviest discipline. The layer wording lives once, in
+  `planning.LAYER_HELP` — change the rule, change the text there.
 
 ## Project notes
 

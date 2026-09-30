@@ -19,12 +19,11 @@ from mondaycom.client import MondayClient
 from mondaycom.config import (
     CANCELLED_STATUSES,
     CURRENT_SPRINT_GROUP,
-    DAM,
     DONE_STATUS,
     ME,
-    NON_DAM,
     SPRINT_BOARD,
     Board,
+    keeps_dam,
 )
 from mondaycom.sprint import Task, sprint_start
 
@@ -216,10 +215,8 @@ def narrow(
     kept = items
     if person:
         kept = [item for item in kept if item.assigned_to(person)]
-    if dam == DAM:
-        kept = [item for item in kept if item.epic_id in dam_epics]
-    elif dam == NON_DAM:
-        kept = [item for item in kept if item.epic_id not in dam_epics]
+    if dam:
+        kept = [item for item in kept if keeps_dam(dam, item.epic_id in dam_epics)]
     if epic:
         kept = [item for item in kept if item.epic_id == epic]
     return kept
