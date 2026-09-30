@@ -76,7 +76,7 @@ overrides where `monday project` writes.
 | `src/mondaycom/cli.py` | `monday` argparse entry point |
 | `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Epics, Portfolio and Planning pages, FT components, caches |
 | `scripts/` | Bash wrappers so tools run from anywhere |
-| `docs/Project.md` | The vault's project template, as Templater writes it — `project.py` renders it |
+| `docs/Project.md` | The vault's project template, as Templater writes it — `project.py` renders it, and ships it in the wheel |
 | `docs/monday-api/` | **Offline mirror of the monday.com API docs — read this first** |
 | `docs/fasthtml/` | **Offline mirror of the FastHTML docs — read this first** |
 | `tests/` | Offline tests; no network |
@@ -490,7 +490,14 @@ with Jelle on 2026-09-28 and 2026-09-30; ask before changing one.
   evaluated by Obsidian when *it* creates a file; we create the file, so those are
   resolved here — the creation stamp is now, and `tp.file.move` becomes the directory we
   write into. The `&=choice(...)` expressions are **Dataview**, evaluated when the note
-  is *read*, and are copied through untouched. A test asserts no `<%` survives.
+  is *read*, and are copied through untouched. A test asserts no `<%` survives, and a
+  Templater call `project.py` does not know raises instead of being written out as text.
+- **`docs/Project.md` is the only copy of the template.** `project.note_markdown` reads
+  it and fills it in — frontmatter keys by name (a key the template lacks, like
+  `projectstatus`, is appended), `**Label:**` lines by label, the purpose under
+  `# Doel en toelichting`, the monday.com table at the end of `# Project meta data`.
+  Edit the vault's template there and the next note follows. A wheel carries it as
+  `mondaycom/Project.md` (hatch `force-include`); a checkout reads it from `docs/`.
 - **The board's 13 statuses map onto the six words the vault's `projectstatus` field
   actually uses** (`config.PROJECT_STATUSES`: verkenning, backlog, loopt, pauze,
   afgerond, afgevallen). They are different vocabularies — one tracks a sprint workflow,
