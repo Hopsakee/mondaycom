@@ -12,6 +12,7 @@ import pytest
 from fasthtml.common import to_xml
 from starlette.testclient import TestClient
 
+from builders import epic
 from mondaycom import burndown as bd
 from mondaycom import epics as ep
 from mondaycom import planning as pl
@@ -26,28 +27,29 @@ HTMX = {"HX-Request": "1"}
 PEOPLE = [Choice(id="23029337", name="Agnes Dubbink"), Choice(id="23028787", name="Jelle de Jong")]
 
 EPICS = [
-    ep.Epic(
+    epic(
+        "Waterbalans",
         id="e1",
-        name="Waterbalans",
         owner="Fransje van Oorschot",
         status="Working on it",
         priority="High",
-        points=ep.Points(done=94, remaining=19, tasks=8),
+        done=94,
+        remaining=19,
+        tasks=8,
     ),
-    ep.Epic(
+    epic(
+        "Kernregistratie",
+        ("p1",),
         id="e2",
-        name="Kernregistratie",
         owner="Rutger Feijen",
         status="Done",
         priority="Very High",
         portfolio="Kernregistratie",
-        portfolio_ids=("p1",),
-        points=ep.Points(done=12, tasks=3),
+        done=12,
+        tasks=3,
     ),
-    ep.Epic(id="e3", name="Nog niks gepland", owner="Agnes Dubbink", status="To Do", priority="Low"),
-    ep.Epic(
-        id="e4", name="Oud plan", owner="Agnes Dubbink", status="Afgevallen", priority="NNB", points=ep.Points(done=4)
-    ),
+    epic("Nog niks gepland", id="e3", owner="Agnes Dubbink", status="To Do", priority="Low"),
+    epic("Oud plan", id="e4", owner="Agnes Dubbink", status="Afgevallen", priority="NNB", done=4),
 ]
 
 BLOCKER = ep.Impediment(
@@ -59,18 +61,20 @@ BLOCKER = ep.Impediment(
 
 #: An epic held up by a task, and one the epic board itself put on Impediment. Kept out
 #: of `EPICS` so the counts every other test asserts on stay where they are.
-HELD_UP = ep.Epic(
+HELD_UP = epic(
+    "Vastgelopen koppeling",
+    ("p1",),
     id="e5",
-    name="Vastgelopen koppeling",
     owner="Rutger Feijen",
     status="Working on it",
     priority="Medium",
     portfolio="Kernregistratie",
-    portfolio_ids=("p1",),
-    points=ep.Points(done=2, remaining=8, tasks=3),
+    done=2,
+    remaining=8,
+    tasks=3,
     impediments=(BLOCKER,),
 )
-ON_IMPEDIMENT = ep.Epic(id="e6", name="Zit muurvast", status="Impediment", portfolio_ids=("p1",))
+ON_IMPEDIMENT = epic("Zit muurvast", ("p1",), id="e6", status="Impediment")
 
 PORTFOLIO = [
     pf.PortfolioItem(
@@ -482,7 +486,7 @@ def test_a_trekker_gets_an_avatar_with_initials(client: TestClient) -> None:
 
 
 def test_several_trekkers_become_several_persons(client: TestClient) -> None:
-    web._EPICS[:] = [ep.Epic(id="e9", name="Samen", owner="Agnes Dubbink, Jelle de Jong", status="To Do")]
+    web._EPICS[:] = [epic("Samen", id="e9", owner="Agnes Dubbink, Jelle de Jong", status="To Do")]
     body = client.get("/epic_table_rows", headers=HTMX).text
     assert body.count('class="person"') == 2 and 'class="people"' in body
 
@@ -691,7 +695,7 @@ def test_a_blocking_task_is_named_counted_and_linked(client: TestClient) -> None
 
 
 def test_an_epic_blocked_from_both_sides_says_both(client: TestClient) -> None:
-    web._EPICS[:] = [ep.Epic(id="e7", name="Dubbel", status="Impediment", impediments=(BLOCKER, BLOCKER))]
+    web._EPICS[:] = [epic("Dubbel", id="e7", status="Impediment", impediments=(BLOCKER, BLOCKER))]
     body = client.get("/epic_table_rows", headers=HTMX).text
     assert ">epic + 2 tasks</span>" in body
 
@@ -774,7 +778,7 @@ def test_the_default_sort_is_least_complete_first(client: TestClient) -> None:
     web._EPICS[:] = [
         *EPICS,
         HELD_UP,
-        ep.Epic(id="e8", name="Waterbalans II", portfolio_ids=("p2",), points=ep.Points(done=94, remaining=19)),
+        epic("Waterbalans II", ("p2",), id="e8", done=94, remaining=19),
     ]
     body = client.get("/portfolio_table_rows", headers=HTMX).text
     assert portfolio_names(body) == ["Kernregistratie", "Datavalidatie BWK"]
@@ -810,7 +814,7 @@ def test_the_portfolio_summary_counts_the_selection_and_the_whole_board(client: 
 
 
 def test_epics_pointing_at_a_missing_portfolio_item_are_reported(client: TestClient) -> None:
-    web._EPICS[:] = [ep.Epic(id="e9", name="Zwevend", portfolio_ids=("weg",), points=ep.Points(remaining=7))]
+    web._EPICS[:] = [epic("Zwevend", ("weg",), id="e9", remaining=7)]
     body = client.get("/portfolio_table_rows", headers=HTMX).text
     assert "1 epics (7 points) name a portfolio item" in body
 

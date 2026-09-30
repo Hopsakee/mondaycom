@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from builders import board_item, epic
 from mondaycom import epics as ep
 from mondaycom import portfolio as pf
 from mondaycom.config import PORTFOLIO_BOARD, SPRINT_BOARD
@@ -22,24 +23,8 @@ def portfolio_item(
     ref: str = "",
 ) -> dict[str, Any]:
     """An IV Portfolio item as `queries.portfolio_rows` returns it: plain text columns."""
-    values = {"goal": goal, "urgency": urgency, "type": type, "lead": lead, "link": link, "ref": ref}
-    return {
-        "id": item_id,
-        "name": name,
-        "column_values": [{"id": PORTFOLIO_BOARD.column(alias), "text": text} for alias, text in values.items()],
-    }
-
-
-def epic(name: str, portfolio_ids: tuple[str, ...] = (), **kw: Any) -> ep.Epic:
-    done = kw.pop("done", 0.0)
-    remaining = kw.pop("remaining", 0.0)
-    cancelled = kw.pop("cancelled", 0.0)
-    return ep.Epic(
-        id=kw.pop("id", name),
-        name=name,
-        portfolio_ids=portfolio_ids,
-        points=ep.Points(done=done, remaining=remaining, cancelled=cancelled),
-        **kw,
+    return board_item(
+        PORTFOLIO_BOARD, name, item_id, goal=goal, urgency=urgency, type=type, lead=lead, link=link, ref=ref
     )
 
 

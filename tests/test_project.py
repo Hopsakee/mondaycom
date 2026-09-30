@@ -7,44 +7,38 @@ from typing import Any
 
 import pytest
 
+from builders import board_item, link
 from mondaycom import project
 from mondaycom.config import EPIC_BOARD
 
 # The epic behind the example in docs/Project.md, as the board really answers it.
-DPR_223 = {
-    "id": "2617136005",
-    "name": "Data validatie hydrologisch modelleren het vervolg",
-    "column_values": [
-        {"id": EPIC_BOARD.column("prj_nr"), "text": "DPR-223"},
-        {"id": EPIC_BOARD.column("owner"), "text": "Rutger Feijen"},
-        {"id": EPIC_BOARD.column("owner_text"), "text": "Rutger Feijen"},
-        {"id": EPIC_BOARD.column("status"), "text": "Working on it"},
-        {"id": EPIC_BOARD.column("priority"), "text": "Medium"},
-        # A board_relation answers in display_value; `text` is null.
-        {
-            "id": EPIC_BOARD.column("portfolio"),
-            "text": None,
-            "display_value": "Kernregistratie",
-            "linked_item_ids": ["3125996105"],
-        },
-        {"id": EPIC_BOARD.column("funnel"), "text": "PoC"},
-        {"id": EPIC_BOARD.column("method"), "text": "Cocreatie"},
-        {"id": EPIC_BOARD.column("type"), "text": "Optimalisatie"},
-        {"id": EPIC_BOARD.column("estimate"), "text": "S"},
-        {"id": EPIC_BOARD.column("client"), "text": None},
-        {"id": EPIC_BOARD.column("experts"), "text": "Stefan de Vries"},
-        {"id": EPIC_BOARD.column("why"), "text": "Als hydroloog wil ik gevalideerde data gebruiken"},
-        {"id": EPIC_BOARD.column("product"), "text": ""},
-        {"id": EPIC_BOARD.column("quality"), "text": "verbeterde data en verbeterd beheerregister"},
-        {"id": EPIC_BOARD.column("budget"), "text": ""},
-        {"id": EPIC_BOARD.column("submitted"), "text": "2026-01-08"},
-        {"id": EPIC_BOARD.column("planned_start"), "text": "2026-01-01"},
-        {"id": EPIC_BOARD.column("started"), "text": "2026-01-08"},
-        {"id": EPIC_BOARD.column("planned_end"), "text": "2026-07-01"},
-        {"id": EPIC_BOARD.column("finished"), "text": ""},
-        {"id": EPIC_BOARD.column("due_date"), "text": ""},
-    ],
-}
+DPR_223 = board_item(
+    EPIC_BOARD,
+    "Data validatie hydrologisch modelleren het vervolg",
+    "2617136005",
+    prj_nr="DPR-223",
+    owner="Rutger Feijen",
+    owner_text="Rutger Feijen",
+    status="Working on it",
+    priority="Medium",
+    portfolio=link("Kernregistratie", "3125996105"),
+    funnel="PoC",
+    method="Cocreatie",
+    type="Optimalisatie",
+    estimate="S",
+    client=None,
+    experts="Stefan de Vries",
+    why="Als hydroloog wil ik gevalideerde data gebruiken",
+    product="",
+    quality="verbeterde data en verbeterd beheerregister",
+    budget="",
+    submitted="2026-01-08",
+    planned_start="2026-01-01",
+    started="2026-01-08",
+    planned_end="2026-07-01",
+    finished="",
+    due_date="",
+)
 
 
 class FakeClient:

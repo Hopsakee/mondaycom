@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
 
 import pytest
 
+from builders import board_item, link
 from mondaycom import burndown as bd
 from mondaycom import planning as pl
 from mondaycom.config import (
@@ -59,19 +59,16 @@ def test_mirror_members_are_added_up() -> None:
 
 
 def test_split_from_item_reads_link_mirror_and_blank_percentages() -> None:
-    cols = DISTRIBUTION_BOARD.columns
-    item: dict[str, Any] = {
-        "id": 1,
-        "name": "Waterbalans",
-        "column_values": [
-            {"id": cols["epic"], "text": None, "display_value": "Waterbalans", "linked_item_ids": ["42"]},
-            {"id": cols["todo"], "text": None, "display_value": "19, 3, 1"},
-            {"id": cols["DE"], "text": "50"},
-            {"id": cols["DB"], "text": "50"},
-            {"id": cols["DS"], "text": ""},
-            {"id": cols["PO/AT"], "text": None},
-        ],
-    }
+    item = board_item(
+        DISTRIBUTION_BOARD,
+        "Waterbalans",
+        epic=link("Waterbalans", "42"),
+        todo={"text": None, "display_value": "19, 3, 1"},
+        DE="50",
+        DB="50",
+        DS="",
+        **{"PO/AT": None},
+    )
     s = pl.Split.from_item(item)
     assert (s.epic_id, s.todo, s.has_todo) == ("42", 23, True)
     assert s.shares == {"DE": 50, "DB": 50, "DS": None, "PO/AT": None}
@@ -92,35 +89,30 @@ def test_person_capacity_is_stp_times_availability_minus_overhead() -> None:
 
 
 def test_person_from_item() -> None:
-    cols = CAPACITY_BOARD.columns
-    item = {
-        "id": 1,
-        "name": "Agnes Dubbink",
-        "column_values": [
-            {"id": cols["role"], "text": "DE"},
-            {"id": cols["stp"], "text": "16"},
-            {"id": cols["sprint_available"], "text": "100"},
-            {"id": cols["quarter_available"], "text": "90"},
-            {"id": cols["overhead"], "text": "10"},
-        ],
-    }
+    item = board_item(
+        CAPACITY_BOARD,
+        "Agnes Dubbink",
+        role="DE",
+        stp="16",
+        sprint_available="100",
+        quarter_available="90",
+        overhead="10",
+    )
     p = pl.Person.from_item(item)
     assert (p.role, p.stp, p.sprint_available, p.quarter_available, p.overhead) == ("DE", 16, 100, 90, 10)
 
 
 def test_plan_epic_from_item_reads_group_due_date_and_portfolio() -> None:
-    cols = EPIC_BOARD.columns
-    item = {
-        "id": 7,
-        "name": "Waterbalans",
-        "group": {"id": EPIC_GROUP_ACTIVE, "title": "Actief"},
-        "column_values": [
-            {"id": cols["status"], "text": "Working on it"},
-            {"id": cols["priority"], "text": "High"},
-            {"id": cols["due_date"], "text": "2026-12-31"},
-            {"id": cols["portfolio"], "text": None, "linked_item_ids": ["5097962811"]},
-        ],
-    }
+    item = board_item(
+        EPIC_BOARD,
+        "Waterbalans",
+        "7",
+        {"id": EPIC_GROUP_ACTIVE, "title": "Actief"},
+        status="Working on it",
+        priority="High",
+        due_date="2026-12-31",
+        portfolio=link("", "5097962811"),
+    )
     e = pl.PlanEpic.from_item(item)
     assert (e.group, e.group_title, e.due) == (EPIC_GROUP_ACTIVE, "Actief", date(2026, 12, 31))
     assert e.is_dam

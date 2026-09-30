@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from builders import board_item, epic, link
 from mondaycom import epics as ep
 from mondaycom.config import DAM, DONE_BOARD, DUMMY_GROUPS, EPIC_BOARD, NON_DAM, SPRINT_BOARD, Board
 
@@ -13,44 +14,29 @@ from mondaycom.config import DAM, DONE_BOARD, DUMMY_GROUPS, EPIC_BOARD, NON_DAM,
 def epic_item(
     item_id: str, name: str, owner: str = "", status: str = "", priority: str = "", portfolio: str = ""
 ) -> dict[str, Any]:
-    """An epic board item as `queries.epic_rows` returns it. Portfolio is a
-    board_relation, so its name arrives in `display_value` and `text` is null."""
-    return {
-        "id": item_id,
-        "name": name,
-        "column_values": [
-            {"id": EPIC_BOARD.column("owner"), "text": owner},
-            {"id": EPIC_BOARD.column("status"), "text": status},
-            {"id": EPIC_BOARD.column("priority"), "text": priority},
-            {
-                "id": EPIC_BOARD.column("portfolio"),
-                "text": None,
-                "display_value": portfolio,
-                "linked_item_ids": [f"p-{portfolio}"] if portfolio else [],
-            },
-        ],
-    }
+    """An epic board item as `queries.epic_rows` returns it."""
+    return board_item(
+        EPIC_BOARD,
+        name,
+        item_id,
+        owner=owner,
+        status=status,
+        priority=priority,
+        portfolio=link(portfolio, f"p-{portfolio}" if portfolio else ""),
+    )
 
 
 def task_item(
-    item_id: str, points: str, status: str, epic_id: str = "", group: str = "backlog", board: Board = SPRINT_BOARD
+    item_id: str,
+    points: str,
+    status: str,
+    epic_id: str = "",
+    group: str = "backlog",
+    board: Board = SPRINT_BOARD,
+    name: str = "t",
 ) -> dict[str, Any]:
     """A sprint board item as `queries.board_tasks` returns it."""
-    return {
-        "id": item_id,
-        "group": {"id": group},
-        "column_values": [
-            {"id": board.column("story_points"), "text": points},
-            {"id": board.column("status"), "text": status},
-            {"id": board.column("epic"), "text": None, "linked_item_ids": [epic_id] if epic_id else []},
-        ],
-    }
-
-
-def epic(name: str = "E", **kw: Any) -> ep.Epic:
-    done = kw.pop("done", 0.0)
-    remaining = kw.pop("remaining", 0.0)
-    return ep.Epic(id=kw.pop("id", "1"), name=name, points=ep.Points(done=done, remaining=remaining), **kw)
+    return board_item(board, name, item_id, group, story_points=points, status=status, epic=link("", epic_id))
 
 
 # --- reading an epic ------------------------------------------------------------------
@@ -148,7 +134,7 @@ def test_an_epic_with_no_tasks_sorts_after_a_full_one_rather_than_as_empty() -> 
 
 
 def test_cancelled_points_are_in_neither_side_of_the_battery() -> None:
-    row = ep.Epic(id="1", name="E", points=ep.Points(done=2, remaining=1, cancelled=40))
+    row = epic(done=2, remaining=1, cancelled=40)
     assert row.total == 3
 
 
@@ -159,7 +145,7 @@ ROWS = [
     epic("Droogte", id="2", status="Done", owner="Fransje van Oorschot", priority="Very High", done=9),
     epic("Energiemodel", id="3", status="On hold", owner="Rutger Feijen", priority="Medium", remaining=5),
 ]
-DAM_ROW = ep.Epic(id="4", name="Kernregistratie", portfolio="Kernregistratie", portfolio_ids=("p-1",), status="To Do")
+DAM_ROW = epic("Kernregistratie", ("p-1",), id="4", portfolio="Kernregistratie", status="To Do")
 
 
 def test_search_is_a_case_insensitive_substring_of_the_title() -> None:
@@ -256,7 +242,7 @@ def test_totals_add_up_the_selection() -> None:
 
 # --- dropped epics and the status chips -------------------------------------------------
 
-DROPPED = ep.Epic(id="9", name="Oud plan", status="Afgevallen", owner="Agnes Dubbink")
+DROPPED = epic("Oud plan", id="9", status="Afgevallen", owner="Agnes Dubbink")
 
 
 def test_dropped_epics_are_hidden_unless_asked_for() -> None:
@@ -286,9 +272,7 @@ def test_status_counts_honour_every_other_filter() -> None:
 
 def blocked_item(item_id: str, name: str, epic_id: str, board: Board = SPRINT_BOARD) -> dict[str, Any]:
     """A task on Impediment, as `queries.board_tasks` returns it — name included."""
-    item = task_item(item_id, "3", "Impediment", epic_id, board=board)
-    item["name"] = name
-    return item
+    return task_item(item_id, "3", "Impediment", epic_id, board=board, name=name)
 
 
 def test_a_blocked_task_is_found_named_and_addressed() -> None:
@@ -313,13 +297,13 @@ def test_a_blocker_in_the_dummy_group_or_on_no_epic_blocks_nothing() -> None:
 def test_an_epic_is_stuck_from_either_side() -> None:
     blocker = ep.Impediment(id="1", name="Blokkade", board=SPRINT_BOARD.name, url="https://example.invalid")
     assert epic(status="Impediment").is_stuck, "the epic's own status"
-    assert ep.Epic(id="1", name="E", impediments=(blocker,)).is_stuck, "or a task holding it up"
+    assert epic(impediments=(blocker,)).is_stuck, "or a task holding it up"
     assert not epic(status="Working on it").is_stuck
 
 
 def test_is_blocked_is_the_epics_own_status_only() -> None:
     blocker = ep.Impediment(id="1", name="Blokkade", board=SPRINT_BOARD.name, url="https://example.invalid")
-    held_up = ep.Epic(id="1", name="E", status="Working on it", impediments=(blocker,))
+    held_up = epic(status="Working on it", impediments=(blocker,))
     assert held_up.is_stuck and not held_up.is_blocked
 
 
