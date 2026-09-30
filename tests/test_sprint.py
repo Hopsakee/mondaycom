@@ -6,17 +6,14 @@ from datetime import date
 
 import pytest
 
+from builders import Cell, board_item, link
 from mondaycom import queries
 from mondaycom.config import OPEN_STATUSES, SPRINT_BOARD
 from mondaycom.sprint import Task, default_sprint_end, sprint_start, tasklist_markdown
 
 
-def item(name: str, **columns: str) -> dict[str, object]:
-    return {
-        "id": "1",
-        "name": name,
-        "column_values": [{"id": cid, "text": text} for cid, text in columns.items()],
-    }
+def item(name: str, **cells: Cell) -> dict[str, object]:
+    return board_item(SPRINT_BOARD, name, **cells)
 
 
 def test_sprint_start_is_three_weeks_inclusive() -> None:
@@ -29,21 +26,21 @@ def test_default_sprint_end_is_next_saturday() -> None:
 
 
 def test_owner_task_renders_duration_and_dates() -> None:
-    task = Task.from_item(item("Do the thing", person="Jelle de Jong", numbers5="2", date7="2026-09-06"))
+    task = Task.from_item(item("Do the thing", owner="Jelle de Jong", story_points="2", due_date="2026-09-06"))
     assert not task.is_reviewer
     assert task.duration_minutes == 240
     assert task.to_markdown("2026-08-17") == "- [ ] #sprint Do the thing [240m] ⏫ ➕ 2026-08-17 📅 2026-09-06"
 
 
 def test_reviewer_task_gets_the_handshake() -> None:
-    task = Task.from_item(item("Review the thing", people="Jelle de Jong", date7="2026-09-06"))
+    task = Task.from_item(item("Review the thing", reviewer="Jelle de Jong", due_date="2026-09-06"))
     assert task.is_reviewer
     assert task.to_markdown("2026-08-17") == "- [ ] #sprint Review the thing 🤝reviewer ⏫ ➕ 2026-08-17 📅 2026-09-06"
 
 
 @pytest.mark.parametrize("points", ["", "not-a-number", None])
 def test_missing_story_points_means_no_duration(points: str | None) -> None:
-    task = Task.from_item(item("Vague task", numbers5=points))  # type: ignore[arg-type]
+    task = Task.from_item(item("Vague task", story_points=points))
     assert task.duration_minutes == 0
     assert "m]" not in task.to_markdown("2026-08-17")
 
@@ -69,32 +66,25 @@ def test_query_filters_by_status_index_not_label() -> None:
 
 def test_query_without_statuses_has_only_the_date_rule() -> None:
     query = queries.sprint_tasks("2026-09-06")
-    assert "status_stories" not in query.split("groups:")[0]
+    assert SPRINT_BOARD.column("status") not in query.split("groups:")[0]
     assert '"EXACT", "2026-09-06"' in query
 
 
 def test_epic_name_comes_from_display_value_not_text() -> None:
     """A board_relation column returns `text: null`; the name lives in `display_value`."""
-    raw = {
-        "id": "1",
-        "name": "Berekeningen fudura data",
-        "column_values": [
-            {"id": "person", "text": "Agnes Dubbink"},
-            {"id": "link_to_stories__main2", "text": None, "display_value": "EBO-EIS 6.3"},
-        ],
-    }
+    raw = item("Berekeningen fudura data", owner="Agnes Dubbink", epic=link("EBO-EIS 6.3"))
     task = Task.from_item(raw)
     assert task.owner == "Agnes Dubbink"
     assert task.epic == "EBO-EIS 6.3"
 
 
 def test_a_task_without_an_epic_has_an_empty_one() -> None:
-    task = Task.from_item(item("Retrospect trigger", link_to_stories__main2=""))
+    task = Task.from_item(item("Retrospect trigger", epic=link()))
     assert task.epic == ""
 
 
 def test_the_handshake_marker_tracks_whoever_you_ask_about() -> None:
-    raw = item("Review waterschapsmodel", people="Agnes Dubbink")
+    raw = item("Review waterschapsmodel", reviewer="Agnes Dubbink")
     assert Task.from_item(raw, me="Agnes Dubbink").is_reviewer
     assert not Task.from_item(raw, me="Jelle de Jong").is_reviewer
 
