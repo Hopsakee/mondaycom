@@ -303,7 +303,7 @@ def cmd_planning(args: argparse.Namespace) -> int:
         snapshot = planning.fetch(client)
     dam = DAM_CHOICES[args.dam]
     window = planning.window(snapshot.current_end, start=args.start or "", end=args.end or "")
-    plan = planning.plan(snapshot, window, layers, dam)
+    plan = planning.plan(snapshot, window, layers, dam, this_quarter=args.this_quarter)
     sprints = window.sprints
 
     scope = planning.layers_text(layers).lower()
@@ -312,6 +312,7 @@ def cmd_planning(args: argparse.Namespace) -> int:
         + (f" (to {window.last_day})" if sprints else "")
         + f" · {scope}"
         + (f" · {args.dam} only" if dam else "")
+        + (f" · due by {window.end}" if args.this_quarter else "")
     )
     print()
     heads = "".join(f"{planning.LAYERS[layer].lower():>9}" for layer in layers)
@@ -503,6 +504,9 @@ def build_parser() -> argparse.ArgumentParser:
         "Only the selection takes capacity",
     )
     _add_dam(p)
+    p.add_argument(
+        "--this-quarter", action="store_true", help="only epics due on or before the quarter end (see --end)"
+    )
     p.set_defaults(func=cmd_planning)
 
     p = subs.add_parser("project", help="write an Obsidian project note for one epic")

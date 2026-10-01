@@ -348,3 +348,25 @@ def test_next_sprint_weighs_open_tasks_by_their_epic_split() -> None:
     assert (n.load["DE"], n.load["DB"], n.load["DS"]) == (2, 2, 0)
     assert n.unplaced == 2
     assert n.capacity["DE"] == 10
+
+
+def test_this_quarter_keeps_only_epics_due_by_the_quarter_end() -> None:
+    epics = [
+        epic("due", due=WINDOW.end),
+        epic("undated"),
+        epic("later", due=date(2027, 1, 31)),
+        epic("backlog-due", group=EPIC_GROUP_BACKLOG, due=date(2026, 10, 30)),
+        epic("unlinked-due", due=date(2026, 11, 1)),
+    ]
+    splits = [split(e.id, 10) for e in epics if e.id != "unlinked-due"]
+    every_layer = (pl.PROMISED, pl.LATER, pl.BACKLOG)
+
+    p = pl.plan(snapshot(epics, splits), WINDOW, every_layer, this_quarter=True)
+    # Every ticked layer is narrowed, Backlog included; no due date never counts as due.
+    assert [q.epic.id for q in p.queue] == ["due", "backlog-due"]
+    assert [pr.epic.id for pr in p.problems] == ["unlinked-due"]
+    assert p.this_quarter
+
+    # The layers still decide on their own: unticked Backlog stays out.
+    assert [q.epic.id for q in pl.plan(snapshot(epics, splits), WINDOW, this_quarter=True).queue] == ["due"]
+    assert len(pl.plan(snapshot(epics, splits), WINDOW, every_layer).queue) == 4
