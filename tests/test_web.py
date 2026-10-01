@@ -1059,3 +1059,15 @@ def test_planning_treats_an_unknown_dam_value_as_both(planned: TestClient) -> No
     assert "Waterbalans" in response.text and "Backlogding" in response.text
     assert "only" not in response.text.split('class="lede"')[1].split("</p>")[0]
     assert planned.get("/planning", params={"dam": "DAM"}).status_code == 200
+
+
+def test_planning_this_quarter_switch_narrows_to_epics_due_by_the_quarter_end(planned: TestClient) -> None:
+    params = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
+    html = planned.get("/planning_view", params={**params, "this_quarter": "1"}, headers=HTMX).text
+    # Neither fixture epic has a due date, so nothing is due by the quarter end.
+    assert "No epic in this selection" in html
+    assert "due by 2026-11-18" in html
+    page_html = planned.get("/planning", params={"this_quarter": "1"}).text
+    assert 'name="this_quarter"' in page_html and "checked" in page_html.split('name="this_quarter"')[1][:40]
+    assert f'title="{pl.THIS_QUARTER_HELP}"' in page_html
+    assert "this_quarter=1" in page_html

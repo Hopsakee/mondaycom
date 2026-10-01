@@ -72,6 +72,12 @@ LAYERS = {
 #: What each layer holds, in the words the page's hover text and help panel use. The
 #: group is the epic board's own group, not its "Status epic" — the status is shown, it
 #: does not decide.
+#: The "This quarter" filter, in the words the page and the CLI use for it.
+THIS_QUARTER_HELP = (
+    "Only epics whose Due date on the epic board is on or before the quarter end. "
+    "Epics without a due date drop out. Applies to every ticked layer."
+)
+
 LAYER_HELP = {
     PROMISED: "Epics in the Actief or Bespreken group on the epic board, due on or before the quarter end "
     "or with no due date: what we have promised to do this quarter.",
@@ -218,6 +224,10 @@ class PlanEpic:
     @property
     def url(self) -> str:
         return item_url(EPIC_BOARD, self.id)
+
+    def due_by(self, day: date) -> bool:
+        """Has a due date, and it is on or before `day`. No due date is never due."""
+        return self.due is not None and self.due <= day
 
     @property
     def is_dam(self) -> bool:
@@ -454,6 +464,8 @@ class Plan:
     unassigned_people: list[Person] = field(default_factory=list)
     layers: tuple[str, ...] = ()
     dam: str = ""
+    #: Only epics due on or before the quarter end — see `THIS_QUARTER_HELP`.
+    this_quarter: bool = False
 
 
 def queue_key(p: Planned) -> tuple[Any, ...]:
@@ -517,7 +529,13 @@ def next_sprint(snapshot: Snapshot, splits: dict[str, Split], dam: str = "") -> 
     return NextSprint(capacity=capacity, load=load, unplaced=unplaced, tasks=tasks)
 
 
-def plan(snapshot: Snapshot, w: Window, layers: tuple[str, ...] = (PROMISED,), dam: str = "") -> Plan:
+def plan(
+    snapshot: Snapshot,
+    w: Window,
+    layers: tuple[str, ...] = (PROMISED,),
+    dam: str = "",
+    this_quarter: bool = False,
+) -> Plan:
     """Queue the selected epics, forecast them, and weigh them against capacity.
 
     The selection is every epic in one of `layers` that passes the DAM filter. Only
@@ -539,6 +557,8 @@ def plan(snapshot: Snapshot, w: Window, layers: tuple[str, ...] = (PROMISED,), d
     for epic in snapshot.epics:
         layer = epic.layer(w.end)
         if layer not in layers or not keeps_dam(dam, epic.is_dam):
+            continue
+        if this_quarter and not epic.due_by(w.end):
             continue
         split = splits.get(epic.id)
         if split is not None:
@@ -565,6 +585,7 @@ def plan(snapshot: Snapshot, w: Window, layers: tuple[str, ...] = (PROMISED,), d
         unassigned_people=[p for p in snapshot.people if p.role not in DISCIPLINES],
         layers=layers,
         dam=dam,
+        this_quarter=this_quarter,
     )
 
 

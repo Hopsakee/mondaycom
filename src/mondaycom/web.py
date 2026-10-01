@@ -1475,9 +1475,10 @@ DAM_HELP = (
 )
 
 
-def planning_filters(start: str, end: str, layers: tuple[str, ...], dam: str) -> Any:
-    """The window, the layers and the DAM half. Together they are the selection: only the
-    epics they pick take capacity, so every number below answers "can we do exactly this?"."""
+def planning_filters(start: str, end: str, layers: tuple[str, ...], dam: str, this_quarter: bool) -> Any:
+    """The window, the layers, the DAM half and "This quarter". Together they are the
+    selection: only the epics they pick take capacity, so every number below answers
+    "can we do exactly this?"."""
     return Form(
         Div(
             planning_date_fields(start, end),
@@ -1492,6 +1493,11 @@ def planning_filters(start: str, end: str, layers: tuple[str, ...], dam: str) ->
                     )
                     for key, label in planning.LAYERS.items()
                 ],
+                Label(
+                    Input(type="checkbox", name="this_quarter", role="switch", checked=this_quarter),
+                    "This quarter",
+                    title=planning.THIS_QUARTER_HELP,
+                ),
                 cls="layers",
             ),
             cls="filters",
@@ -1539,8 +1545,9 @@ def dam_label(dam: str) -> str:
 
 
 def selection_text(p: planning.Plan) -> str:
-    """The selection in words, for the heading: "Promised + Later · DAM only"."""
-    return " · ".join(filter(None, [planning.layers_text(p.layers), dam_label(p.dam)]))
+    """The selection in words, for the heading: "Promised + Later · DAM only · due by …"."""
+    due = f"due by {p.window.end}" if p.this_quarter else ""
+    return " · ".join(filter(None, [planning.layers_text(p.layers), dam_label(p.dam), due]))
 
 
 def planning_tiles(p: planning.Plan) -> Any:
@@ -1635,7 +1642,8 @@ def how_it_works(p: planning.Plan) -> Any:
             Table(Tbody(*layer_rows), cls="help"),
             H4("What is counted"),
             P(
-                "An epic counts when it is in a ticked layer, passes the Portfolio filter, and has a row on "
+                "An epic counts when it is in a ticked layer, passes the Portfolio filter (and, with "
+                "“This quarter” on, has a Due date on or before the quarter end), and has a row on "
                 "Epics-STP-distribution that is linked to it with a split over DE / DB / DS / PO/AT adding up to "
                 "100%. Its work is that row's STP-TODO, exactly as monday.com computes it. Everything else is "
                 "listed under the epics as left out, with a link to fix it on monday.com."
@@ -1814,18 +1822,26 @@ def planning_section(p: planning.Plan) -> Any:
 
 
 @rt("/planning")
-def planning_page(start: str = "", end: str = "", layer: list[str] | None = None, dam: str = ANY_PORTFOLIO) -> Any:
+def planning_page(
+    start: str = "",
+    end: str = "",
+    layer: list[str] | None = None,
+    dam: str = ANY_PORTFOLIO,
+    this_quarter: bool = False,
+) -> Any:
     """The planning. The numbers arrive on their own request, behind a spinner: a cold
     cache means reading the epic board and four smaller reads."""
     layers = planning.parse_layers(layer)
     return page(
         "Planning",
         lede("Planned STP per discipline against capacity, and which epics that lets us finish."),
-        planning_filters(start, end, layers, dam),
+        planning_filters(start, end, layers, dam, this_quarter),
         Div(
             P(Small("Loading the planning boards…"), aria_busy="true"),
             id="planning",
-            hx_get=planning_view.to(start=start, end=end, layer=list(layers), dam=dam),
+            hx_get=planning_view.to(
+                start=start, end=end, layer=list(layers), dam=dam, **({"this_quarter": 1} if this_quarter else {})
+            ),
             hx_trigger="load",
             hx_swap="outerHTML",
         ),
@@ -1834,7 +1850,12 @@ def planning_page(start: str = "", end: str = "", layer: list[str] | None = None
 
 @rt
 def planning_view(
-    start: str = "", end: str = "", layer: list[str] | None = None, dam: str = ANY_PORTFOLIO, refresh: int = 0
+    start: str = "",
+    end: str = "",
+    layer: list[str] | None = None,
+    dam: str = ANY_PORTFOLIO,
+    this_quarter: bool = False,
+    refresh: int = 0,
 ) -> Any:
     """The section under the filters. The dates ride back out of band, so the fields show
     the window the plan settled on rather than a blank."""
@@ -1844,7 +1865,7 @@ def planning_view(
         w = planning.window(snapshot.current_end, start=start, end=end)
     except FETCH_ERRORS as exc:
         return error(exc, id="planning")
-    p = planning.plan(snapshot, w, layers, dam)
+    p = planning.plan(snapshot, w, layers, dam, this_quarter)
     return (
         planning_section(p),
         planning_date_fields(str(w.start), str(w.end))(hx_swap_oob="true"),

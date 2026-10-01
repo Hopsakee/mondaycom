@@ -41,6 +41,7 @@ uv run monday planning                      # load per discipline, and which epi
 uv run monday planning --layer all          # promised + later + backlog
 uv run monday planning --end 2027-03-31     # plan to another quarter end
 uv run monday planning --dam dam            # only epics in the IV Portfolio
+uv run monday planning --this-quarter       # only epics due on or before the quarter end
 uv run monday project DPR-223               # write an Obsidian project note for one epic
 uv run monday project 223 --stdout          # same epic, printed instead of written
 uv run monday project 2617136005 --out .    # by monday.com item id, into this directory
@@ -121,7 +122,8 @@ team's capacity for a window you set — by default from the day after the curre
 to the end of that quarter, in whole sprints. It shows which discipline is most
 overbooked, how many sprints each needs, a forecast finish per epic, and the load of the
 Next sprint group against next sprint's availability. Tick **Promised**, **Later** and
-**Backlog** and pick **DAM** / **Non-DAM** / both to choose what to plan: only that
+**Backlog**, pick **DAM** / **Non-DAM** / both, and flip **This quarter** to keep only the
+epics due on or before the quarter end, to choose what to plan: only that
 selection takes capacity, so the overbooked percentage answers "could we do exactly
 this before the quarter end?". Hover a checkbox for what it holds, or open **How is this
 calculated?** on the page.

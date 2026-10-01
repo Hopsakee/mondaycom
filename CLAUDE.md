@@ -41,6 +41,7 @@ uv run monday portfolio --stuck --empty    # only blocked items / also the ones 
 uv run monday planning              # load per discipline vs capacity, which epics fit the quarter
 uv run monday planning --layer all --end 2027-03-31   # every layer, to another quarter end
 uv run monday planning --dam dam --layer backlog       # only the DAM backlog: would that fit?
+uv run monday planning --layer all --this-quarter      # only epics due by the quarter end
 uv run monday project DPR-223        # write an Obsidian project note for one epic
 uv run monday project 223 --stdout   # same epic, printed instead of written
 uv run monday project 2617136005 --out . --force   # by item id, into this directory
@@ -419,7 +420,7 @@ formula. Today that splits the board 42 / 233.
 
 `monday planning` and `/planning` answer "how much work does each discipline have, how
 much can it do, and which epics does that let us finish?". Every rule below was agreed
-with Jelle on 2026-09-28 and 2026-09-30; ask before changing one.
+with Jelle on 2026-09-28, 2026-09-30 and 2026-10-01; ask before changing one.
 
 - **Two boards of its own.** Epics-STP-distribution (`5105081537`): one row per epic,
   linked by `board_relation_mm7m2g0t`, with STP-TODO (`lookup_mm7m50j4`, a mirror of the
@@ -441,6 +442,12 @@ with Jelle on 2026-09-28 and 2026-09-30; ask before changing one.
   capacity: the load is "if we do exactly this in the window, how far over are we?".
   Backlog alone means the backlog alone. This replaced an earlier rule where a later
   layer counted the layers ahead of it — do not bring that back.
+- **"This quarter" narrows every ticked layer** to epics whose Due date is on or before
+  the quarter end (`PlanEpic.due_by`, `--this-quarter`); an epic with no due date drops
+  out. The team set a due date on every epic meant for this quarter on 2026-10-01, so
+  this is the "what did we commit to" view — including a Backlog epic that is due. Like
+  the layers, it does not touch the Next sprint check. Its wording is
+  `planning.THIS_QUARTER_HELP`.
 - **One queue** of the selection: Promised → Later → Backlog, then priority, due date,
   smallest first. The forecast runs on that queue, so it answers the same question.
 - **Strict per discipline.** Each works down the queue on its own; an epic finishes in
