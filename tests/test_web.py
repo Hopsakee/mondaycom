@@ -112,6 +112,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setattr(web, "MondayClient", FakeClient)
     web._CLIENT.clear()  # so the shared client is made from the fake
     web._TASKS.clear()
+    web._SPRINT.clear()
     web._PEOPLE[:] = PEOPLE
     # Pre-filled, so no route goes looking for the epic board either.
     web._EPICS[:] = EPICS
@@ -122,6 +123,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     web._EPICS.clear()
     web._PORTFOLIO.clear()
     web._DAM_EPICS.clear()
+    web._SPRINT.clear()
     web._CLIENT.clear()
 
 
@@ -316,6 +318,46 @@ def test_an_empty_group_is_an_error_message_not_a_crash(client: TestClient, monk
     monkeypatch.setattr(bd, "fetch_sprint_items", lambda client: [])
     response = client.get("/")
     assert response.status_code == 200 and "No due dates in the sprint group" in response.text
+
+
+# --- the sprint page: the cached read ----------------------------------------------------
+
+
+def counting_reads(monkeypatch: pytest.MonkeyPatch, items: list[bd.SprintItem]) -> list[int]:
+    reads: list[int] = []
+    monkeypatch.setattr(bd, "fetch_sprint_items", lambda client: reads.append(1) or items)
+    return reads
+
+
+def test_a_filter_change_narrows_the_cached_group_instead_of_reading_it_again(
+    client: TestClient, sprint_group: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No filter changes the read, so re-reading would fetch identical bytes."""
+    reads = counting_reads(monkeypatch, sprint_group)
+    client.get("/")
+    client.get("/sprint_view", params={"person": web.EVERYONE}, headers=HTMX)
+    body = client.get("/sprint_view", params={"person": web.EVERYONE, "open_only": "on"}, headers=HTMX).text
+    assert len(reads) == 1
+    assert task_names(body) == ["Bouw het dashboard", "Review waterschapsmodel"], "still narrowed"
+
+
+def test_a_page_load_and_the_refresh_button_read_the_group_afresh(
+    client: TestClient, sprint_group: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reloading is how you see a task you just moved on monday.com."""
+    reads = counting_reads(monkeypatch, sprint_group)
+    client.get("/")
+    client.get("/")
+    assert len(reads) == 2
+    client.get("/sprint_view", params={"refresh": "1"}, headers=HTMX)
+    assert len(reads) == 3
+
+
+def test_the_refresh_button_keeps_the_filters(client: TestClient, sprint_group: Any) -> None:
+    body = client.get("/").text
+    button = re.search(r"<button[^>]*>Refresh from monday.com</button>", body)
+    assert button and 'hx-include="#sprint-filters"' in button.group(0)
+    assert "refresh=1" in button.group(0)
 
 
 # --- the sprint page: the views ---------------------------------------------------------
