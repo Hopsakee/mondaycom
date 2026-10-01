@@ -903,11 +903,15 @@ def filter_fields(view: TableView, rows: list[Any], f: Any) -> Any:
     return Div(*view.fields(rows, f), cls="filters", id=f"{view.at}-filter-fields")
 
 
-def view_filters(view: TableView, rows: list[Any], f: Any, spec: str) -> Any:
-    """The filter form: the chips (if any), the fields, and the hidden current sort."""
+def view_filters(view: TableView, f: Any, spec: str) -> Any:
+    """The page shell's filter form: chips (if any), fields, and the hidden current sort.
+
+    Built from *no* rows: it carries every filter's value, and the options and counts
+    arrive with the first table — see `view_page`.
+    """
     return Form(
-        view.chips(rows, f) if view.chips else None,
-        filter_fields(view, rows, f),
+        view.chips([], f) if view.chips else None,
+        filter_fields(view, [], f),
         sort_field(view, spec),
         Div(
             Button("Apply", type="submit"),
@@ -925,13 +929,18 @@ def view_filters(view: TableView, rows: list[Any], f: Any, spec: str) -> Any:
     )
 
 
-def view_page(view: TableView, rows: list[Any], f: Any, sort: str) -> Any:
+def view_page(view: TableView, f: Any, sort: str) -> Any:
     """The page shell: the filters, and the table deferred to its own `load` request,
-    because a cold cache means reading the epic board and both sprint boards."""
+    because a cold cache means reading the epic board and both sprint boards.
+
+    The shell's controls are built from no rows, warm cache or cold; their options and
+    counts arrive with that first table (`fields=1`, plus the chips that come with every
+    response). Building them here as well computed the filter block twice per page load.
+    """
     return page(
         view.title,
         lede(view.about),
-        view_filters(view, rows, f, sort),
+        view_filters(view, f, sort),
         Div(
             P(Small(view.loading), aria_busy="true"),
             id=f"{view.at}-table",
@@ -1049,6 +1058,11 @@ def status_chips(rows: list[Epic], f: epics.Filters) -> Any:
     epics clicking it shows, and the board's shape is visible before anything is chosen.
     Swapped out of band on every response, because the counts move with the filters.
     """
+    field = Input(type="hidden", name="status", value=f.status)
+    wrapper = {"cls": "chips", "id": "status-chips", "role": "group", "aria_label": "Status epic"}
+    if not rows:
+        # Nothing to count (the page shell, or an empty board): the field, no "All 0" chip.
+        return Div(field, **wrapper)
     counts = epics.status_counts(rows, f)
     # "All" is what clearing the status shows — which, unlike a dropped status's own
     # chip, still hides dropped epics unless the switch is on.
@@ -1066,25 +1080,24 @@ def status_chips(rows: list[Epic], f: epics.Filters) -> Any:
         )
 
     return Div(
-        Input(type="hidden", name="status", value=f.status),
+        field,
         chip("All", "", everything),
         *[chip(chart.status_tag(status), status, count) for status, count in counts],
-        cls="chips",
-        id="status-chips",
-        role="group",
-        aria_label="Status epic",
+        **wrapper,
     )
 
 
 def filter_select(name: str, label: str, any_of: str, values: list[str], selected: str) -> Any:
     """One column's filter, on either overview. Built from the values actually on the
     board, so no choice in it can come back empty — the same rule as the sprint page's
-    epic dropdown."""
+    epic dropdown. Before there are rows to offer (the page shell) the selected value is
+    its only option, so the form does not quietly drop a filter it was given."""
+    offered = values or ([selected] if selected else [])
     return Label(
         label,
         Select(
             Option(any_of, value="", selected=not selected),
-            *[Option(v, value=v, selected=v == selected) for v in values],
+            *[Option(v, value=v, selected=v == selected) for v in offered],
             name=name,
         ),
     )
@@ -1120,7 +1133,7 @@ def epics_page(
     blank tab for twenty seconds.
     """
     f = epics.Filters(search=search, status=status, owner=owner, dam=dam, bucket=bucket, stuck=stuck, dropped=dropped)
-    return view_page(EPIC_VIEW, _EPICS, f, sort)
+    return view_page(EPIC_VIEW, f, sort)
 
 
 def _set(f: epics.Filters | portfolio.Filters) -> dict[str, str]:
@@ -1271,7 +1284,7 @@ def portfolio_page(
     f = portfolio.Filters(
         search=search, goal=goal, type=type, urgency=urgency, lead=lead, bucket=bucket, stuck=stuck, empty=empty
     )
-    return view_page(PORTFOLIO_VIEW, portfolio.attach(_PORTFOLIO, _EPICS), f, sort)
+    return view_page(PORTFOLIO_VIEW, f, sort)
 
 
 @rt

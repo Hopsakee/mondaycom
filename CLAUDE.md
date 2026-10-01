@@ -375,9 +375,12 @@ formula. Today that splits the board 42 / 233.
 - **Status and Priority sort in the board's order**, not the alphabet — a workflow, not
   a word list. A label the board no longer offers sorts after every one it does.
 - Every filter dropdown is built from the fetched rows, so no choice can come back
-  empty. They arrive with the first table (`fields=1`), because a cold page load has no
-  rows yet — and *only* then, since re-rendering them on every keystroke would take the
-  caret out of the search box. (The chips are the exception, see above.)
+  empty. They arrive with the first table (`fields=1`) — and *only* then, since
+  re-rendering them on every keystroke would take the caret out of the search box. (The
+  chips are the exception, see above.) **The page shell builds them from no rows, warm
+  cache or cold** (`web.view_page`): it carries every filter's value — a dropdown's only
+  option is the selected one, the chips are just their hidden `status` field — and leaves
+  the options and counts to that first table, rather than computing the block twice.
 - **The whole board is cached in `web._EPICS`.** The first fetch is six requests and
   ~2400 items (~19s), so the table loads on its own `hx_trigger="load"` request behind a
   spinner and every sort or filter after that is a local re-render. "Refresh from
