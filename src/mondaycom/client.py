@@ -4,20 +4,22 @@ The API answers with HTTP 200 even when the query failed, so every response goes
 through :meth:`MondayClient.execute`, which raises on the ``errors`` key instead
 of handing back a dict that silently has no ``data``.
 
-One client is safe to share between threads: each thread gets its own
-`requests.Session`, because a session is not thread-safe, and keeps it for as long as
-the thread lives — so a thread's connection pool, and the TLS handshake behind it,
-survive from one of its requests to the next.
+One client is safe to share between threads. Each thread gets its own
+`requests.Session`, because a session's state is not thread-safe, but every session
+mounts the client's one `HTTPAdapter` — a urllib3 pool, which is. So a connection, and
+the TLS handshake behind it, outlives the thread that opened it: a web worker thread
+retired after ten idle seconds, or a `fetch_epics` pool thread, hands its warm
+connection to the next one rather than taking it along.
 """
 
 from __future__ import annotations
 
 import threading
-import weakref
 from collections.abc import Callable
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from mondaycom.config import API_URL, API_VERSION, api_key
 
@@ -27,7 +29,7 @@ class MondayError(RuntimeError):
 
 
 class MondayClient:
-    """Session-backed client for `POST https://api.monday.com/v2`, one session per thread."""
+    """Client for `POST https://api.monday.com/v2`: a session per thread, one connection pool."""
 
     def __init__(
         self,
@@ -35,6 +37,7 @@ class MondayClient:
         api_url: str = API_URL,
         api_version: str = API_VERSION,
         timeout: float = 30.0,
+        pool_size: int = 10,
     ) -> None:
         self.api_url = api_url
         self.timeout = timeout
@@ -43,21 +46,21 @@ class MondayClient:
             "API-Version": api_version,
             "Content-Type": "application/json",
         }
+        #: The connection pool every thread's session shares. Sized for the web UI's
+        #: worker threads; past it, urllib3 opens and drops extra connections.
+        self.adapter = HTTPAdapter(pool_maxsize=pool_size)
         self._local = threading.local()
-        self._lock = threading.Lock()
-        #: Weak, so a session goes when its thread does rather than piling up here.
-        self._sessions: weakref.WeakSet[requests.Session] = weakref.WeakSet()
 
     @property
     def session(self) -> requests.Session:
-        """This thread's session, opened on first use."""
+        """This thread's session, opened on first use, on the shared connection pool."""
         session: requests.Session | None = getattr(self._local, "session", None)
         if session is None:
             session = requests.Session()
             session.headers.update(self.headers)
+            session.mount("https://", self.adapter)
+            session.mount("http://", self.adapter)
             self._local.session = session
-            with self._lock:
-                self._sessions.add(session)
         return session
 
     def execute(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -112,12 +115,8 @@ class MondayClient:
                 return items
 
     def close(self) -> None:
-        """Close every thread's session. A thread that asks again gets a fresh one."""
-        with self._lock:
-            sessions, self._sessions = list(self._sessions), weakref.WeakSet()
-            self._local = threading.local()
-        for session in sessions:
-            session.close()
+        """Close the pooled connections. The client stays usable: the next request opens new ones."""
+        self.adapter.close()
 
     def __enter__(self) -> MondayClient:
         return self

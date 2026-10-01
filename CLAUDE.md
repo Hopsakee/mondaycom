@@ -643,7 +643,11 @@ Obsidian Tasks plugin syntax, pasted into the vault:
 - The web UI caches the last fetch in module-level state (`web._TASKS`, `web._EPICS`,
   `web._PORTFOLIO`, `web._DAM_EPICS`), so the markdown route can re-render a selection
   and the epics table can re-sort without re-querying. Fine for one person on localhost; it would
-  need a session if the UI is ever shared or run under multiple workers.
+  need a session if the UI is ever shared or run under multiple workers. The same goes for
+  `web.monday_client()`, the **one `MondayClient` every route shares** (a client per route was
+  a TLS handshake per filter change). It gives each thread its own session on **one shared
+  urllib3 pool**, so a warm connection outlives anyio retiring an idle worker thread (after
+  10s) and `fetch_epics`' short-lived pool threads; the app's `on_shutdown` closes it. Tests patch `web.MondayClient` and clear `web._CLIENT`.
 - A task's points can be read twice on the Sprint page: the tiles hold the Trekker's
   share and the list's own total holds every listed task ("24 points · 13 as Trekker").
   Two true numbers, one line apart — watch that it stays legible if more totals arrive.

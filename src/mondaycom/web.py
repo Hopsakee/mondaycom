@@ -15,6 +15,7 @@ on monday.com again. Single user, single process, localhost.
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -105,6 +106,30 @@ PORTFOLIO_LABELS = ((ANY_PORTFOLIO, "Both"), (DAM, "DAM only"), (NON_DAM, "Non-D
 FETCH_ERRORS = (MondayError, ValueError, RuntimeError, OSError)
 
 
+# The one client every route shares — see `monday_client`.
+_CLIENT: list[MondayClient] = []
+_CLIENT_LOCK = threading.Lock()
+
+
+def monday_client() -> MondayClient:
+    """The one client every route shares, made on first use and kept for the process.
+
+    A client per route was a fresh TLS handshake per page render and filter change. The
+    lock keeps two cold requests from making two; `close_client` runs on shutdown.
+    """
+    with _CLIENT_LOCK:
+        if not _CLIENT:
+            _CLIENT.append(MondayClient())
+        return _CLIENT[0]
+
+
+def close_client() -> None:
+    """Close the shared client's connections, if it was ever made. It stays usable."""
+    with _CLIENT_LOCK:
+        if _CLIENT:
+            _CLIENT[0].close()
+
+
 def people_choices() -> list[Choice]:
     """The people for the assignee dropdown, fetched once and then cached.
 
@@ -112,11 +137,8 @@ def people_choices() -> list[Choice]:
     "Me" and "Everyone", which is what the CLI does anyway.
     """
     if not _PEOPLE:
-        try:
-            with MondayClient() as client:
-                _PEOPLE[:] = lookups.fetch_people(client)
-        except FETCH_ERRORS:
-            pass
+        with suppress(*FETCH_ERRORS):
+            _PEOPLE[:] = lookups.fetch_people(monday_client())
     return _PEOPLE
 
 
@@ -132,8 +154,7 @@ def dam_epics() -> set[str]:
         if _EPICS:
             _DAM_EPICS.update(epic.id for epic in _EPICS if epic.is_dam)
         else:
-            with MondayClient() as client:
-                _DAM_EPICS.update(epics.dam_epic_ids(client))
+            _DAM_EPICS.update(epics.dam_epic_ids(monday_client()))
     return _DAM_EPICS
 
 
@@ -313,7 +334,9 @@ async def live_reload_ws(websocket: Any) -> None:
 
 live_reload.live_reload_ws = live_reload_ws
 
-app, rt = fast_app(title="monday sprint", live=LIVE, hdrs=(Style(CSS), Style(chart.CHART_CSS)))
+app, rt = fast_app(
+    title="monday sprint", live=LIVE, hdrs=(Style(CSS), Style(chart.CHART_CSS)), on_shutdown=[close_client]
+)
 
 
 def page(title: str, *content: Any) -> Any:
@@ -637,8 +660,7 @@ def _sprint(end: str, person: str, epic: str, dam: str, open_only: bool) -> Spri
     """Read the group once, narrow it, and render every view of it."""
     try:
         name = person_name(person)
-        with MondayClient() as client:
-            items = bd.fetch_sprint_items(client)
+        items = bd.fetch_sprint_items(monday_client())
         dam_scope = frozenset(dam_epics() if dam else ())
         # The epic list is built from the person's and the portfolio's scope, so a pick
         # can never come back empty; an epic that left the scope falls back to "all".
@@ -737,8 +759,7 @@ def epic_cache(refresh: bool = False) -> tuple[list[Epic], epics.Points]:
     """The epic board, fetched on first use and then reused. `refresh` re-reads it."""
     global _ORPHANS
     if refresh or not _EPICS:
-        with MondayClient() as client:
-            rows, orphans = epics.fetch_epics(client)
+        rows, orphans = epics.fetch_epics(monday_client())
         _EPICS[:] = rows
         _ORPHANS = orphans
         # The DAM set is a view of these rows, so it goes stale with them.
@@ -1095,8 +1116,7 @@ def portfolio_cache(refresh: bool = False) -> tuple[list[PortfolioItem], list[Ep
     """
     rows, _ = epic_cache(refresh=refresh)
     if refresh or not _PORTFOLIO:
-        with MondayClient() as client:
-            _PORTFOLIO[:] = portfolio.fetch_items(client)
+        _PORTFOLIO[:] = portfolio.fetch_items(monday_client())
     return portfolio.attach(_PORTFOLIO, rows), rows
 
 
@@ -1454,8 +1474,7 @@ def portfolio_item_view(item: str = "") -> Any:
 def planning_cache(refresh: bool = False) -> planning.Snapshot:
     """The planning boards, fetched on first use and then reused. `refresh` re-reads them."""
     if refresh or not _PLANNING:
-        with MondayClient() as client:
-            _PLANNING[:] = [planning.fetch(client)]
+        _PLANNING[:] = [planning.fetch(monday_client())]
     return _PLANNING[0]
 
 
