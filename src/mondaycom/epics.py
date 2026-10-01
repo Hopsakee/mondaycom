@@ -397,16 +397,6 @@ def arrange(
     return SORTING.apply(kept, sort, desc)
 
 
-def parse_sort(spec: str) -> tuple[str, bool]:
-    """Split a sort spec into its column and direction: ``"-done"`` is done, descending."""
-    return SORTING.parse(spec)
-
-
-def next_sort(column: str, spec: str) -> str:
-    """The spec a click on `column`'s header should ask for, given the current one."""
-    return SORTING.next(column, spec)
-
-
 def status_counts(epics: list[Epic], f: Filters) -> list[tuple[str, int]]:
     """How many epics each status chip would show, given every *other* filter.
 

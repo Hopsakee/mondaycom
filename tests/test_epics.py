@@ -212,15 +212,15 @@ def test_every_column_the_page_shows_is_sortable() -> None:
 
 def test_an_unknown_sort_key_falls_back_instead_of_raising() -> None:
     """It arrives from a query string, so it is not trustworthy."""
-    assert ep.parse_sort("../../etc/passwd") == (ep.DEFAULT_SORT, False)
+    assert ep.SORTING.parse("../../etc/passwd") == (ep.DEFAULT_SORT, False)
     assert len(ep.arrange(ROWS, sort="nonsense")) == len(ROWS)
 
 
 def test_a_sort_spec_round_trips_through_its_header() -> None:
-    assert ep.parse_sort("-done") == ("done", True)
-    assert ep.next_sort("done", "priority") == "-done", "numbers open high-to-low"
-    assert ep.next_sort("name", "priority") == "name", "text opens A-to-Z"
-    assert ep.next_sort("done", "-done") == "done", "clicking again flips it back"
+    assert ep.SORTING.parse("-done") == ("done", True)
+    assert ep.SORTING.next("done", "priority") == "-done", "numbers open high-to-low"
+    assert ep.SORTING.next("name", "priority") == "name", "text opens A-to-Z"
+    assert ep.SORTING.next("done", "-done") == "done", "clicking again flips it back"
 
 
 # --- the dropdown option lists --------------------------------------------------------

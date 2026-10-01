@@ -355,7 +355,7 @@ formula. Today that splits the board 42 / 233.
 - **An epic with no tasks gets an empty outlined battery, not a 0% one** — there is
   nothing to be 0% of — and sorts *after* a full one (`epics.NO_TASKS`).
 - Every column sorts. Sorting is one string (`"-done"` is done descending,
-  `epics.parse_sort` / `next_sort`), so a header carries the *next* state and needs no
+  `epics.SORTING.parse` / `.next`), so a header carries the *next* state and needs no
   memory: `sort` rides in from the form's hidden field, `resort` from a clicked header,
   the header wins, and the fresh value is swapped back into the form out of band.
 - **The filters are: status chips, Item search, Trekker, DAM, Progress, Show dropped.**
@@ -626,9 +626,13 @@ Obsidian Tasks plugin syntax, pasted into the vault:
   `#epic-table`, `#portfolio-table`, `#portfolio-item`) swaps `outerHTML`.** An
   innerHTML swap nests a second wrapper inside the first on every filter change — it
   did, for a while.
-- **A sortable header is `web.sort_header`, shared by both tables.** It takes the route
-  with the next spec already on it plus one `at` prefix, and derives `#<at>-filters` and
-  `#<at>-table` from it — so the two tables' ids have to stay in that shape.
+- **The Epics and Portfolio tables are one `web.TableView` each** (`EPIC_VIEW`,
+  `PORTFOLIO_VIEW`): the columns, the `Sorting`, the cache, the row and summary renderers,
+  the filter fields and the two routes. `sort_header`, `view_table`, `view_filters`,
+  `view_page` and `view_rows` exist once and take the view, and every id derives from its
+  `at` prefix — `#<at>-filters`, `#<at>-table`, `#<at>-sort`, `#<at>-filter-fields` — so a
+  fix to the swap or indicator wiring reaches both tables. A third overview is a third
+  `TableView`, not a sixth copy of these.
 - **The portfolio table fits 1280px closed and scrolls a little when a stuck marker is
   opened.** The blockers panel is in flow rather than absolutely positioned: the
   `.table-wrap` clips on both axes, so an overlay would be cut off on the bottom rows.
