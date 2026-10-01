@@ -278,6 +278,12 @@ list can never disagree about what is in the sprint.
   `/sprint_view` swaps `#sprint` with `outerHTML` and sends the epic list and the date
   field back out of band, so the dropdown only ever offers epics in the new scope and the
   field shows the window the group settled on.
+- **The group read is cached in `web._SPRINT`, but a page load always refreshes it.** No
+  filter changes the read, so a filter change narrows the cached rows instead of
+  re-reading identical bytes (`web.sprint_cache`). The page route passes `refresh=True`
+  and so does the "Refresh from monday.com" button, so reloading is still how you see a
+  task you just moved — the daily Obsidian paste never works from a stale read it did
+  not ask for.
 - Default person is **Me** — the Obsidian paste is the daily use — and the per-person
   row keeps the whole team in view regardless.
 
@@ -640,9 +646,9 @@ Obsidian Tasks plugin syntax, pasted into the vault:
 - The CLI `sprint-tasks` and the web Sprint page define membership differently (due
   date versus group). Moving the CLI to the group read would make them one thing, at the
   cost of the server-side person/epic rules.
-- The web UI caches the last fetch in module-level state (`web._TASKS`, `web._EPICS`,
-  `web._PORTFOLIO`, `web._DAM_EPICS`), so the markdown route can re-render a selection
-  and the epics table can re-sort without re-querying. Fine for one person on localhost; it would
+- The web UI caches the last fetch in module-level state (`web._TASKS`, `web._SPRINT`,
+  `web._EPICS`, `web._PORTFOLIO`, `web._DAM_EPICS`), so the markdown route can re-render a
+  selection and the epics table can re-sort without re-querying. Fine for one person on localhost; it would
   need a session if the UI is ever shared or run under multiple workers. The same goes for
   `web.monday_client()`, the **one `MondayClient` every route shares** (a client per route was
   a TLS handshake per filter change). It gives each thread its own session on **one shared

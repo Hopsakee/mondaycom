@@ -75,6 +75,9 @@ from mondaycom.sprint import Task
 # a selection without going back to monday.com.
 _TASKS: dict[str, Task] = {}
 
+# The sprint group from the last read — see `sprint_cache`.
+_SPRINT: list[list[bd.SprintItem]] = []
+
 # The people dropdown changes rarely and costs a query, so it is fetched once.
 _PEOPLE: list[Choice] = []
 
@@ -477,6 +480,21 @@ def sprint_end_field(end: str) -> Any:
     return Input(type="date", name="end", value=end, id="sprint-end")
 
 
+def refresh_button(route: Any, form: str, target: str) -> Any:
+    """Re-read the page's boards: `route` with `refresh` on it, sent with the `form`'s
+    filters so the fresh read comes back in the same slice, swapped over `target`."""
+    return Button(
+        "Refresh from monday.com",
+        type="button",
+        cls="secondary outline",
+        hx_get=route,
+        hx_include=form,
+        hx_target=target,
+        hx_swap="outerHTML",
+        hx_indicator=form,
+    )
+
+
 def sprint_controls(end: str, person: str, choices: list[Choice], epic: str, dam: str, open_only: bool) -> Any:
     """The filter row: sprint end, who, which epic, portfolio, and whether to drop Done."""
     return Form(
@@ -494,7 +512,12 @@ def sprint_controls(end: str, person: str, choices: list[Choice], epic: str, dam
                 "Open only (drop Done tasks from the list)",
             ),
         ),
-        Div(Button("Update", type="submit"), Small(" loading…", id="spinner"), cls="actions"),
+        Div(
+            Button("Update", type="submit"),
+            refresh_button(sprint_view.to(refresh=1), "#sprint-filters", "#sprint"),
+            Small(" loading…", id="spinner"),
+            cls="actions",
+        ),
         hx_get=sprint_view,
         hx_target="#sprint",
         hx_swap="outerHTML",
@@ -656,11 +679,24 @@ class SprintPage:
     choices: list[Choice]
 
 
-def _sprint(end: str, person: str, epic: str, dam: str, open_only: bool) -> SprintPage:
-    """Read the group once, narrow it, and render every view of it."""
+def sprint_cache(refresh: bool = False) -> list[bd.SprintItem]:
+    """The sprint group, read on first use and then reused. `refresh` re-reads it.
+
+    Every filter on the page is applied in Python to the same ~60 rows (the read
+    carries no `query_params`), so a filter change re-reading them would fetch identical
+    bytes. A page load and the "Refresh" button do re-read, so reloading is still how
+    you see a task you just moved on monday.com.
+    """
+    if refresh or not _SPRINT:
+        _SPRINT[:] = [bd.fetch_sprint_items(monday_client())]
+    return _SPRINT[0]
+
+
+def _sprint(end: str, person: str, epic: str, dam: str, open_only: bool, refresh: bool = False) -> SprintPage:
+    """Take the group (from the cache unless `refresh`), narrow it, and render every view of it."""
     try:
         name = person_name(person)
-        items = bd.fetch_sprint_items(monday_client())
+        items = sprint_cache(refresh)
         dam_scope = frozenset(dam_epics() if dam else ())
         # The epic list is built from the person's and the portfolio's scope, so a pick
         # can never come back empty; an epic that left the scope falls back to "all".
@@ -697,8 +733,9 @@ def index(
     dam: str = ANY_PORTFOLIO,
     open_only: bool = False,
 ) -> Any:
-    """The sprint: filters on top, then tiles, chart, per-person charts, tasks, markdown."""
-    result = _sprint(end, person, epic, dam, open_only)
+    """The sprint: filters on top, then tiles, chart, per-person charts, tasks, markdown.
+    A page load always reads the group afresh (`sprint_cache`)."""
+    result = _sprint(end, person, epic, dam, open_only, refresh=True)
     return page(
         "Sprint",
         lede("The current sprint group: points burnt down, who stands where, and the tasks as Obsidian checkboxes."),
@@ -714,13 +751,15 @@ def sprint_view(
     epic: str = ALL_EPICS,
     dam: str = ANY_PORTFOLIO,
     open_only: bool = False,
+    refresh: bool = False,
 ) -> Any:
     """The section under the filters, on its own, so a filter change swaps it in place.
 
-    The date field and the epic list ride along out of band: the first shows the window
-    the group settled on, the second only offers epics in the new scope.
+    It narrows the cached group unless `refresh` (`sprint_cache`). The date field and the
+    epic list ride along out of band: the first shows the window the group settled on,
+    the second only offers epics in the new scope.
     """
-    result = _sprint(end, person, epic, dam, open_only)
+    result = _sprint(end, person, epic, dam, open_only, refresh)
     return (
         result.view,
         sprint_end_field(result.end)(hx_swap_oob="true"),
@@ -978,16 +1017,7 @@ def epic_filters(rows: list[Epic], f: epics.Filters, spec: str) -> Any:
         Div(
             Button("Apply", type="submit"),
             A("Clear", href=epics_page, role="button", cls="secondary outline"),
-            Button(
-                "Refresh from monday.com",
-                type="button",
-                cls="secondary outline",
-                hx_get=epic_table_rows.to(refresh=1, fields=1),
-                hx_include="#epic-filters",
-                hx_target="#epic-table",
-                hx_swap="outerHTML",
-                hx_indicator="#epic-filters",
-            ),
+            refresh_button(epic_table_rows.to(refresh=1, fields=1), "#epic-filters", "#epic-table"),
             Small(" loading…", id="spinner"),
             cls="actions",
         ),
@@ -1254,16 +1284,7 @@ def portfolio_filters(rows: list[PortfolioItem], f: portfolio.Filters, spec: str
         Div(
             Button("Apply", type="submit"),
             A("Clear", href=portfolio_page, role="button", cls="secondary outline"),
-            Button(
-                "Refresh from monday.com",
-                type="button",
-                cls="secondary outline",
-                hx_get=portfolio_table_rows.to(refresh=1, fields=1),
-                hx_include="#portfolio-filters",
-                hx_target="#portfolio-table",
-                hx_swap="outerHTML",
-                hx_indicator="#portfolio-filters",
-            ),
+            refresh_button(portfolio_table_rows.to(refresh=1, fields=1), "#portfolio-filters", "#portfolio-table"),
             Small(" loading…", id="spinner"),
             cls="actions",
         ),
@@ -1524,16 +1545,7 @@ def planning_filters(start: str, end: str, layers: tuple[str, ...], dam: str, th
         Div(
             Button("Apply", type="submit"),
             A("Reset", href=planning_page, role="button", cls="secondary outline"),
-            Button(
-                "Refresh from monday.com",
-                type="button",
-                cls="secondary outline",
-                hx_get=planning_view.to(refresh=1),
-                hx_include="#planning-filters",
-                hx_target="#planning",
-                hx_swap="outerHTML",
-                hx_indicator="#planning-filters",
-            ),
+            refresh_button(planning_view.to(refresh=1), "#planning-filters", "#planning"),
             Small(" loading…", id="spinner"),
             cls="actions",
         ),
