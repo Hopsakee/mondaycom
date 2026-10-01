@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -69,6 +70,7 @@ from mondaycom.config import ASSIGNED_TO_ME, DAM, DONE_STATUS, ME, NON_DAM, OPEN
 from mondaycom.epics import Epic
 from mondaycom.lookups import Choice
 from mondaycom.portfolio import PortfolioItem
+from mondaycom.sorting import Sorting
 from mondaycom.sprint import Task
 
 # Tasks from the last fetch, by monday.com item id, so the markdown route can re-render
@@ -780,17 +782,17 @@ def markdown(end: str = "", task_id: list[str] | None = None) -> Any:
 # is fetched once into `_EPICS`; sorting and filtering then happen in Python, so a
 # dropdown or a header click costs a render and not six monday.com requests.
 
-#: Column key -> heading. The order here is the order of the table.
+#: Column key, heading, header class. The order here is the order of the table.
 EPIC_COLUMNS = (
-    ("name", "Item"),
-    ("status", "Status epic"),
-    ("stuck", "Stuck"),
-    ("owner", "Trekker"),
-    ("portfolio", "Portfolio"),
-    ("priority", "Priority"),
-    ("done", "STP done"),
-    ("remaining", "STP left"),
-    ("progress", "Progress"),
+    ("name", "Item", None),
+    ("status", "Status epic", "tight"),
+    ("stuck", "Stuck", "tight"),
+    ("owner", "Trekker", "tight"),
+    ("portfolio", "Portfolio", "portfolio"),
+    ("priority", "Priority", "tight"),
+    ("done", "STP done", "tight"),
+    ("remaining", "STP left", "tight"),
+    ("progress", "Progress", "tight"),
 )
 
 
@@ -806,14 +808,50 @@ def epic_cache(refresh: bool = False) -> tuple[list[Epic], epics.Points]:
     return _EPICS, _ORPHANS
 
 
-def sort_header(heading: str, active: bool, desc: bool, rows: Any, at: str, cls: str | None = None) -> Any:
+@dataclass(frozen=True)
+class TableView:
+    """One overview table — the Epics page's or the Portfolio page's — described once,
+    so the header, the table, the filter form and the partial route exist once each.
+
+    `at` names every wrapper the page swaps: `#<at>-filters` (the form),
+    `#<at>-table` (what a sort or filter replaces), `#<at>-sort` (the hidden spec) and
+    `#<at>-filter-fields` (the dropdowns).
+    """
+
+    at: str
+    title: str
+    about: str
+    loading: str
+    sorting: Sorting
+    #: Column key, heading, header class — in the table's order.
+    columns: tuple[tuple[str, str, str | None], ...]
+    #: `refresh` -> (every row, whatever the summary reports beside them).
+    load: Callable[[bool], tuple[list[Any], Any]]
+    #: (rows, filters, sort=, desc=) -> the rows shown, in order.
+    arrange: Callable[..., list[Any]]
+    row: Callable[[Any], Any]
+    #: (shown, every row, the extra from `load`) -> the tiles above the table.
+    summary: Callable[[list[Any], list[Any], Any], Any]
+    #: (rows, filters) -> the filter controls, swapped in once with the first table.
+    fields: Callable[[list[Any], Any], tuple[Any, ...]]
+    rows_route: Any
+    page_route: Any
+    table_cls: str
+    board_empty: str
+    none_match: str
+    caption: str | None = None
+    #: (rows, filters) -> controls above the fields that come back with *every* response.
+    chips: Callable[[list[Any], Any], Any] | None = None
+
+
+def sort_header(view: TableView, column: str, heading: str, cls: str | None, spec: str) -> Any:
     """One sortable heading: a submit-free button that asks for the next sort state.
 
     The direction lives in the URL and the filters ride along from the form, so the
-    header needs no state of its own — see `sorting.Sorting.next`. `rows` is the partial
-    route with the next spec already on it, and `at` names both the form it sends and
-    the wrapper it swaps, which every table keeps in step (`#epic-filters` / `#epic-table`).
+    header needs no state of its own — see `sorting.Sorting.next`.
     """
+    current, desc = view.sorting.parse(spec)
+    active = column == current
     return Th(
         Button(
             heading,
@@ -821,27 +859,140 @@ def sort_header(heading: str, active: bool, desc: bool, rows: Any, at: str, cls:
             cls="sort",
             type="button",
             aria_sort=("descending" if desc else "ascending") if active else None,
-            hx_get=rows,
-            hx_include=f"#{at}-filters",
-            hx_target=f"#{at}-table",
+            hx_get=view.rows_route.to(resort=view.sorting.next(column, spec)),
+            hx_include=f"#{view.at}-filters",
+            hx_target=f"#{view.at}-table",
             hx_swap="outerHTML",
-            hx_indicator=f"#{at}-filters",
+            hx_indicator=f"#{view.at}-filters",
         ),
         cls=cls,
     )
 
 
-def epic_sort_header(column: str, heading: str, spec: str) -> Any:
-    """The epics table's version: its own sort vocabulary, its own wrappers."""
-    current, desc = epics.parse_sort(spec)
-    return sort_header(
-        heading,
-        active=column == current,
-        desc=desc,
-        rows=epic_table_rows.to(resort=epics.next_sort(column, spec)),
-        at="epic",
-        cls="portfolio" if column == "portfolio" else "tight" if column != "name" else None,
+def view_table(view: TableView, shown: list[Any], everything: list[Any], extra: Any, spec: str) -> Any:
+    """The table, header included: the one thing a sort or a filter swaps.
+
+    Every response carries this `#<at>-table` wrapper, so everything that targets it
+    swaps `outerHTML` — an innerHTML swap would nest a second wrapper inside the first.
+    """
+    if not everything:
+        body: Any = P(view.board_empty)
+    elif not shown:
+        body = P(view.none_match)
+    else:
+        body = Div(
+            Table(
+                Caption(view.caption, cls="hint") if view.caption else None,
+                Thead(Tr(*[sort_header(view, key, heading, cls, spec) for key, heading, cls in view.columns])),
+                Tbody(*[view.row(row) for row in shown]),
+                cls=view.table_cls,
+            ),
+            cls="table-wrap",
+        )
+    return Div(view.summary(shown, everything, extra), body, cls="viz", id=f"{view.at}-table")
+
+
+def sort_field(view: TableView, spec: str) -> Any:
+    """The current sort, hidden in the form. Every response swaps it out of band, so a
+    header click and a dropdown change each keep what the other chose."""
+    return Input(type="hidden", name="sort", value=spec, id=f"{view.at}-sort")
+
+
+def filter_fields(view: TableView, rows: list[Any], f: Any) -> Any:
+    """The view's filter controls, in the wrapper the first table swaps out of band."""
+    return Div(*view.fields(rows, f), cls="filters", id=f"{view.at}-filter-fields")
+
+
+def view_filters(view: TableView, rows: list[Any], f: Any, spec: str) -> Any:
+    """The filter form: the chips (if any), the fields, and the hidden current sort."""
+    return Form(
+        view.chips(rows, f) if view.chips else None,
+        filter_fields(view, rows, f),
+        sort_field(view, spec),
+        Div(
+            Button("Apply", type="submit"),
+            A("Clear", href=view.page_route, role="button", cls="secondary outline"),
+            refresh_button(view.rows_route.to(refresh=1, fields=1), f"#{view.at}-filters", f"#{view.at}-table"),
+            Small(" loading…", id="spinner"),
+            cls="actions",
+        ),
+        hx_get=view.rows_route,
+        hx_target=f"#{view.at}-table",
+        hx_swap="outerHTML",
+        hx_trigger="change, search, submit, input changed delay:400ms from:input[name=search]",
+        hx_indicator="closest form",
+        id=f"{view.at}-filters",
     )
+
+
+def view_page(view: TableView, rows: list[Any], f: Any, sort: str) -> Any:
+    """The page shell: the filters, and the table deferred to its own `load` request,
+    because a cold cache means reading the epic board and both sprint boards."""
+    return page(
+        view.title,
+        lede(view.about),
+        view_filters(view, rows, f, sort),
+        Div(
+            P(Small(view.loading), aria_busy="true"),
+            id=f"{view.at}-table",
+            hx_get=view.rows_route.to(**{"sort": sort, "fields": 1, **_set(f)}),
+            hx_trigger="load",
+            hx_swap="outerHTML",
+        ),
+    )
+
+
+def view_rows(view: TableView, f: Any, sort: str, resort: str, refresh: int, fields: int) -> Any:
+    """The table on its own: the target of every sort click and every filter change.
+
+    `sort` rides in from the form's hidden field and `resort` from a clicked header, so
+    the two never collide; the header wins, and the fresh value is swapped back into the
+    form out of band. The chips come back with every response, because their counts
+    depend on the other filters; the fields only when asked (`fields`), with the first
+    table, because re-rendering them on a keystroke takes the caret out of the search box.
+    """
+    spec = resort or sort
+    try:
+        rows, extra = view.load(bool(refresh))
+    except FETCH_ERRORS as exc:
+        return Div(error(exc, id=f"{view.at}-table"), id=f"{view.at}-table")
+
+    column, desc = view.sorting.parse(spec)
+    shown = view.arrange(rows, f, sort=column, desc=desc)
+    out = [
+        view_table(view, shown, rows, extra, spec),
+        sort_field(view, spec)(hx_swap_oob="true"),
+    ]
+    if view.chips:
+        out.append(view.chips(rows, f)(hx_swap_oob="true"))
+    if fields:
+        out.append(filter_fields(view, rows, f)(hx_swap_oob="true"))
+    return tuple(out)
+
+
+def search_field(placeholder: str, aria_label: str, value: str) -> Any:
+    """The title search both overviews open their fields with."""
+    return Label(
+        "Item",
+        Input(type="search", name="search", value=value, placeholder=placeholder, aria_label=aria_label),
+    )
+
+
+def progress_field(bucket: str) -> Any:
+    """The battery column's filter: a bucket, not a number."""
+    return Label(
+        "Progress",
+        Select(
+            Option("Any progress", value="", selected=not bucket),
+            *[Option(label, value=value, selected=value == bucket) for value, label in epics.BUCKETS.items()],
+            name="bucket",
+        ),
+    )
+
+
+def switch(name: str, label: str, checked: bool, title: str) -> Any:
+    """A filter that is on or off, with its rule in the hover."""
+    return Label(Input(type="checkbox", name=name, role="switch", checked=checked), label, cls="switch", title=title)
 
 
 def portfolio_link(epic: Epic) -> Any:
@@ -889,28 +1040,6 @@ def epic_summary(shown: list[Epic], everything: list[Epic], orphans: epics.Point
             )
         )
     return Div(Div(*tiles, cls="kpis"), note, cls="epic-head")
-
-
-def epic_table(shown: list[Epic], everything: list[Epic], orphans: epics.Points, spec: str) -> Any:
-    """The table, header included: the one thing a sort or a filter swaps.
-
-    Every response carries this `#epic-table` wrapper, so everything that targets it
-    swaps `outerHTML` — an innerHTML swap would nest a second wrapper inside the first.
-    """
-    if not everything:
-        body = P("The epic board came back empty.")
-    elif not shown:
-        body = P("No epics match these filters.")
-    else:
-        body = Div(
-            Table(
-                Thead(Tr(*[epic_sort_header(key, heading, spec) for key, heading in EPIC_COLUMNS])),
-                Tbody(*[epic_row(epic) for epic in shown]),
-                cls="epics",
-            ),
-            cls="table-wrap",
-        )
-    return Div(epic_summary(shown, everything, orphans), body, cls="viz", id="epic-table")
 
 
 def status_chips(rows: list[Epic], f: epics.Filters) -> Any:
@@ -961,72 +1090,15 @@ def filter_select(name: str, label: str, any_of: str, values: list[str], selecte
     )
 
 
-def epic_filter_fields(rows: list[Epic], f: epics.Filters) -> Any:
-    """The dropdowns themselves.
-
-    Their options come from the fetched rows, which on a cold page load do not exist
-    yet — so the table response swaps this block in out of band once, rather than on
-    every keystroke, which would take the caret out of the search box.
-    """
-    return Div(
-        Label(
-            "Item",
-            Input(
-                type="search",
-                name="search",
-                value=f.search,
-                placeholder="Search epic titles…",
-                aria_label="Search epic titles",
-            ),
-        ),
+def epic_filter_fields(rows: list[Epic], f: epics.Filters) -> tuple[Any, ...]:
+    """The dropdowns themselves, their options from the fetched rows."""
+    return (
+        search_field("Search epic titles…", "Search epic titles", f.search),
         filter_select("owner", "Trekker", "Any trekker", epics.options(rows, "owner"), f.owner),
         Label("DAM", portfolio_select(f.dam)),
-        Label(
-            "Progress",
-            Select(
-                Option("Any progress", value="", selected=not f.bucket),
-                *[Option(label, value=value, selected=value == f.bucket) for value, label in epics.BUCKETS.items()],
-                name="bucket",
-            ),
-        ),
-        Label(
-            Input(type="checkbox", name="stuck", role="switch", checked=f.stuck),
-            "Only stuck",
-            cls="switch",
-            title="Epics on Impediment, or with a task that is",
-        ),
-        Label(
-            Input(type="checkbox", name="dropped", role="switch", checked=f.dropped),
-            "Show dropped",
-            cls="switch",
-            title="Afgevallen and Overgedragen epics are hidden unless this is on",
-        ),
-        cls="filters",
-        id="epic-filter-fields",
-    )
-
-
-def epic_filters(rows: list[Epic], f: epics.Filters, spec: str) -> Any:
-    """The chips, a filter per remaining column, and the hidden current sort."""
-    return Form(
-        status_chips(rows, f),
-        epic_filter_fields(rows, f),
-        # Updated out of band by every response, so a header click and a dropdown change
-        # each keep what the other chose.
-        Input(type="hidden", name="sort", value=spec, id="epic-sort"),
-        Div(
-            Button("Apply", type="submit"),
-            A("Clear", href=epics_page, role="button", cls="secondary outline"),
-            refresh_button(epic_table_rows.to(refresh=1, fields=1), "#epic-filters", "#epic-table"),
-            Small(" loading…", id="spinner"),
-            cls="actions",
-        ),
-        hx_get=epic_table_rows,
-        hx_target="#epic-table",
-        hx_swap="outerHTML",
-        hx_trigger="change, search, submit, input changed delay:400ms from:input[name=search]",
-        hx_indicator="closest form",
-        id="epic-filters",
+        progress_field(f.bucket),
+        switch("stuck", "Only stuck", f.stuck, "Epics on Impediment, or with a task that is"),
+        switch("dropped", "Show dropped", f.dropped, "Afgevallen and Overgedragen epics are hidden unless this is on"),
     )
 
 
@@ -1048,18 +1120,7 @@ def epics_page(
     blank tab for twenty seconds.
     """
     f = epics.Filters(search=search, status=status, owner=owner, dam=dam, bucket=bucket, stuck=stuck, dropped=dropped)
-    return page(
-        "Epics",
-        lede("Story points per epic, summed from the active and the done sprint board."),
-        epic_filters(_EPICS, f, sort),
-        Div(
-            P(Small("Loading the epic board…"), aria_busy="true"),
-            id="epic-table",
-            hx_get=epic_table_rows.to(**{"sort": sort, "fields": 1, **_set(f)}),
-            hx_trigger="load",
-            hx_swap="outerHTML",
-        ),
-    )
+    return view_page(EPIC_VIEW, _EPICS, f, sort)
 
 
 def _set(f: epics.Filters | portfolio.Filters) -> dict[str, str]:
@@ -1086,30 +1147,9 @@ def epic_table_rows(
     refresh: int = 0,
     fields: int = 0,
 ) -> Any:
-    """The table on its own: the target of every sort click and every filter change.
-
-    `sort` rides in from the form's hidden field and `resort` from a clicked header, so
-    the two never collide; the header wins, and the fresh value is swapped back into the
-    form out of band. The status chips come back with every response, because their
-    counts depend on the other filters.
-    """
-    spec = resort or sort
-    try:
-        rows, orphans = epic_cache(refresh=bool(refresh))
-    except FETCH_ERRORS as exc:
-        return Div(error(exc, id="epic-table"), id="epic-table")
-
+    """The table on its own — see `view_rows`."""
     f = epics.Filters(search=search, status=status, owner=owner, dam=dam, bucket=bucket, stuck=stuck, dropped=dropped)
-    column, desc = epics.parse_sort(spec)
-    shown = epics.arrange(rows, f, sort=column, desc=desc)
-    out = [
-        epic_table(shown, rows, orphans, spec),
-        Input(type="hidden", name="sort", value=spec, id="epic-sort", hx_swap_oob="true"),
-        status_chips(rows, f)(hx_swap_oob="true"),
-    ]
-    if fields:
-        out.append(epic_filter_fields(rows, f)(hx_swap_oob="true"))
-    return tuple(out)
+    return view_rows(EPIC_VIEW, f, sort, resort, refresh, fields)
 
 
 # --- the portfolio page -----------------------------------------------------------------
@@ -1121,18 +1161,18 @@ def epic_table_rows(
 # cached epic board — see `portfolio_cache`. Nothing here reads a board the Epics page
 # does not already read, apart from one cheap request for the portfolio items themselves.
 
-#: Column key -> heading. The order here is the order of the table.
+#: Column key, heading, header class. The order here is the order of the table.
 PORTFOLIO_COLUMNS = (
-    ("name", "Item"),
-    ("stuck", "Stuck"),
-    ("goal", "Doelstelling"),
-    ("type", "Type"),
-    ("urgency", "Urgentie"),
-    ("lead", "Projectleider"),
-    ("epics", "Epics"),
-    ("done", "STP done"),
-    ("remaining", "STP left"),
-    ("progress", "Progress"),
+    ("name", "Item", None),
+    ("stuck", "Stuck", "tight"),
+    ("goal", "Doelstelling", "goal"),
+    ("type", "Type", "tight"),
+    ("urgency", "Urgentie", "tight"),
+    ("lead", "Projectleider", "lead"),
+    ("epics", "Epics", "tight"),
+    ("done", "STP done", "tight"),
+    ("remaining", "STP left", "tight"),
+    ("progress", "Progress", "tight"),
 )
 
 
@@ -1148,19 +1188,6 @@ def portfolio_cache(refresh: bool = False) -> tuple[list[PortfolioItem], list[Ep
     if refresh or not _PORTFOLIO:
         _PORTFOLIO[:] = portfolio.fetch_items(monday_client())
     return portfolio.attach(_PORTFOLIO, rows), rows
-
-
-def portfolio_sort_header(column: str, heading: str, spec: str) -> Any:
-    """The portfolio table's version of `sort_header`."""
-    current, desc = portfolio.parse_sort(spec)
-    return sort_header(
-        heading,
-        active=column == current,
-        desc=desc,
-        rows=portfolio_table_rows.to(resort=portfolio.next_sort(column, spec)),
-        at="portfolio",
-        cls=column if column in ("goal", "lead") else "tight" if column != "name" else None,
-    )
 
 
 def portfolio_row(item: PortfolioItem) -> Any:
@@ -1209,91 +1236,22 @@ def portfolio_summary(shown: list[PortfolioItem], everything: list[PortfolioItem
     return Div(Div(*tiles, cls="kpis"), note, cls="epic-head")
 
 
-def portfolio_table(shown: list[PortfolioItem], everything: list[PortfolioItem], orphans: list[Epic], spec: str) -> Any:
-    """The table, header included: the one thing a sort or a filter swaps."""
-    if not everything:
-        body: Any = P("The IV Portfolio board came back empty.")
-    elif not shown:
-        body = P("No portfolio items match these filters.")
-    else:
-        body = Div(
-            Table(
-                Caption("Click an item to see its epics.", cls="hint"),
-                Thead(Tr(*[portfolio_sort_header(key, heading, spec) for key, heading in PORTFOLIO_COLUMNS])),
-                Tbody(*[portfolio_row(item) for item in shown]),
-                cls="epics portfolio",
-            ),
-            cls="table-wrap",
-        )
-    return Div(portfolio_summary(shown, everything, orphans), body, cls="viz", id="portfolio-table")
-
-
-def portfolio_filter_fields(rows: list[PortfolioItem], f: portfolio.Filters) -> Any:
-    """The dropdowns, built from the rows actually fetched — so no choice comes back empty.
-
-    Swapped in out of band once, with the first table, for the same reason the Epics
-    page does it: re-rendering them on every keystroke takes the caret out of the search box.
-    """
-    return Div(
-        Label(
-            "Item",
-            Input(
-                type="search",
-                name="search",
-                value=f.search,
-                placeholder="Search portfolio items…",
-                aria_label="Search portfolio item titles",
-            ),
-        ),
+def portfolio_filter_fields(rows: list[PortfolioItem], f: portfolio.Filters) -> tuple[Any, ...]:
+    """The dropdowns, built from the rows actually fetched — so no choice comes back empty."""
+    return (
+        search_field("Search portfolio items…", "Search portfolio item titles", f.search),
         filter_select("goal", "Doelstelling", "Any doelstelling", portfolio.options(rows, "goal"), f.goal),
         filter_select("type", "Type", "Any type", portfolio.options(rows, "type"), f.type),
         filter_select("urgency", "Urgentie", "Any urgentie", portfolio.options(rows, "urgency"), f.urgency),
         filter_select("lead", "Projectleider", "Anyone", portfolio.options(rows, "lead"), f.lead),
-        Label(
-            "Progress",
-            Select(
-                Option("Any progress", value="", selected=not f.bucket),
-                *[Option(label, value=value, selected=value == f.bucket) for value, label in portfolio.BUCKETS.items()],
-                name="bucket",
-            ),
-        ),
-        Label(
-            Input(type="checkbox", name="stuck", role="switch", checked=f.stuck),
-            "Only stuck",
-            cls="switch",
-            title="Portfolio items with an epic on Impediment, or with a task that is",
-        ),
-        Label(
-            Input(type="checkbox", name="empty", role="switch", checked=f.empty),
+        progress_field(f.bucket),
+        switch("stuck", "Only stuck", f.stuck, "Portfolio items with an epic on Impediment, or with a task that is"),
+        switch(
+            "empty",
             "Show unlinked",
-            cls="switch",
-            title="166 of the 177 items have no epic linked and therefore no progress to show",
+            f.empty,
+            "166 of the 177 items have no epic linked and therefore no progress to show",
         ),
-        cls="filters",
-        id="portfolio-filter-fields",
-    )
-
-
-def portfolio_filters(rows: list[PortfolioItem], f: portfolio.Filters, spec: str) -> Any:
-    """A filter per column worth filtering on, and the hidden current sort."""
-    return Form(
-        portfolio_filter_fields(rows, f),
-        # Updated out of band by every response, so a header click and a dropdown change
-        # each keep what the other chose.
-        Input(type="hidden", name="sort", value=spec, id="portfolio-sort"),
-        Div(
-            Button("Apply", type="submit"),
-            A("Clear", href=portfolio_page, role="button", cls="secondary outline"),
-            refresh_button(portfolio_table_rows.to(refresh=1, fields=1), "#portfolio-filters", "#portfolio-table"),
-            Small(" loading…", id="spinner"),
-            cls="actions",
-        ),
-        hx_get=portfolio_table_rows,
-        hx_target="#portfolio-table",
-        hx_swap="outerHTML",
-        hx_trigger="change, search, submit, input changed delay:400ms from:input[name=search]",
-        hx_indicator="closest form",
-        id="portfolio-filters",
     )
 
 
@@ -1309,26 +1267,11 @@ def portfolio_page(
     empty: bool = False,
     sort: str = portfolio.DEFAULT_SORT,
 ) -> Any:
-    """Every IV Portfolio item with the epics under it burnt down.
-
-    The table arrives on its own request for the same reason the Epics page's does: a
-    cold cache means reading the epic board and both sprint boards.
-    """
+    """Every IV Portfolio item with the epics under it burnt down."""
     f = portfolio.Filters(
         search=search, goal=goal, type=type, urgency=urgency, lead=lead, bucket=bucket, stuck=stuck, empty=empty
     )
-    return page(
-        "Portfolio",
-        lede("The IV Portfolio board: story points per portfolio item, summed over the epics linked to it."),
-        portfolio_filters(portfolio.attach(_PORTFOLIO, _EPICS), f, sort),
-        Div(
-            P(Small("Loading the portfolio…"), aria_busy="true"),
-            id="portfolio-table",
-            hx_get=portfolio_table_rows.to(**{"sort": sort, "fields": 1, **_set(f)}),
-            hx_trigger="load",
-            hx_swap="outerHTML",
-        ),
-    )
+    return view_page(PORTFOLIO_VIEW, portfolio.attach(_PORTFOLIO, _EPICS), f, sort)
 
 
 @rt
@@ -1346,25 +1289,58 @@ def portfolio_table_rows(
     refresh: int = 0,
     fields: int = 0,
 ) -> Any:
-    """The table on its own: the target of every sort click and every filter change."""
-    spec = resort or sort
-    try:
-        rows, epic_rows = portfolio_cache(refresh=bool(refresh))
-    except FETCH_ERRORS as exc:
-        return Div(error(exc, id="portfolio-table"), id="portfolio-table")
-
+    """The table on its own — see `view_rows`."""
     f = portfolio.Filters(
         search=search, goal=goal, type=type, urgency=urgency, lead=lead, bucket=bucket, stuck=stuck, empty=empty
     )
-    column, desc = portfolio.parse_sort(spec)
-    shown = portfolio.arrange(rows, f, sort=column, desc=desc)
-    out = [
-        portfolio_table(shown, rows, portfolio.orphan_epics(rows, epic_rows), spec),
-        Input(type="hidden", name="sort", value=spec, id="portfolio-sort", hx_swap_oob="true"),
-    ]
-    if fields:
-        out.append(portfolio_filter_fields(rows, f)(hx_swap_oob="true"))
-    return tuple(out)
+    return view_rows(PORTFOLIO_VIEW, f, sort, resort, refresh, fields)
+
+
+def portfolio_rows(refresh: bool) -> tuple[list[PortfolioItem], list[Epic]]:
+    """The portfolio items, and the epics naming an item the board did not return."""
+    rows, epic_rows = portfolio_cache(refresh=refresh)
+    return rows, portfolio.orphan_epics(rows, epic_rows)
+
+
+EPIC_VIEW = TableView(
+    at="epic",
+    title="Epics",
+    about="Story points per epic, summed from the active and the done sprint board.",
+    loading="Loading the epic board…",
+    sorting=epics.SORTING,
+    columns=EPIC_COLUMNS,
+    load=epic_cache,
+    arrange=epics.arrange,
+    row=epic_row,
+    summary=epic_summary,
+    fields=epic_filter_fields,
+    chips=status_chips,
+    rows_route=epic_table_rows,
+    page_route=epics_page,
+    table_cls="epics",
+    board_empty="The epic board came back empty.",
+    none_match="No epics match these filters.",
+)
+
+PORTFOLIO_VIEW = TableView(
+    at="portfolio",
+    title="Portfolio",
+    about="The IV Portfolio board: story points per portfolio item, summed over the epics linked to it.",
+    loading="Loading the portfolio…",
+    sorting=portfolio.SORTING,
+    columns=PORTFOLIO_COLUMNS,
+    load=portfolio_rows,
+    arrange=portfolio.arrange,
+    row=portfolio_row,
+    summary=portfolio_summary,
+    fields=portfolio_filter_fields,
+    rows_route=portfolio_table_rows,
+    page_route=portfolio_page,
+    table_cls="epics portfolio",
+    board_empty="The IV Portfolio board came back empty.",
+    none_match="No portfolio items match these filters.",
+    caption="Click an item to see its epics.",
+)
 
 
 # --- one portfolio item -----------------------------------------------------------------

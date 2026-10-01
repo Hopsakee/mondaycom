@@ -243,16 +243,6 @@ def arrange(
     return SORTING.apply(kept, sort, desc)
 
 
-def parse_sort(spec: str) -> tuple[str, bool]:
-    """Split a sort spec into its column and direction: ``"-done"`` is done, descending."""
-    return SORTING.parse(spec)
-
-
-def next_sort(column: str, spec: str) -> str:
-    """The spec a click on `column`'s header should ask for, given the current one."""
-    return SORTING.next(column, spec)
-
-
 def totals(items: list[PortfolioItem]) -> Points:
     """The headline numbers above the table: the whole selection as one battery."""
     return sum((i.points for i in items), Points())

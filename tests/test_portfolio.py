@@ -212,14 +212,14 @@ def test_urgentie_sorts_in_the_boards_order_not_the_alphabet() -> None:
 
 
 def test_a_sort_spec_carries_its_direction_and_an_unknown_one_falls_back() -> None:
-    assert pf.parse_sort("-done") == ("done", True)
-    assert pf.parse_sort("verzonnen") == (pf.DEFAULT_SORT, False)
+    assert pf.SORTING.parse("-done") == ("done", True)
+    assert pf.SORTING.parse("verzonnen") == (pf.DEFAULT_SORT, False)
 
 
 def test_a_header_offers_the_next_state_and_the_counts_start_high_to_low() -> None:
-    assert pf.next_sort("name", "name") == "-name", "clicking the sorted column flips it"
-    assert pf.next_sort("remaining", "name") == "-remaining", "a fresh numeric column starts descending"
-    assert pf.next_sort("name", "-name") == "name"
+    assert pf.SORTING.next("name", "name") == "-name", "clicking the sorted column flips it"
+    assert pf.SORTING.next("remaining", "name") == "-remaining", "a fresh numeric column starts descending"
+    assert pf.SORTING.next("name", "-name") == "name"
 
 
 def test_the_dropdowns_offer_only_values_the_board_actually_has() -> None:
