@@ -96,17 +96,21 @@ PORTFOLIO = [
 class FakeClient:
     """Stands in for MondayClient so no request ever leaves the process."""
 
-    def __enter__(self) -> FakeClient:
-        return self
+    made = 0
 
-    def __exit__(self, *exc_info: object) -> None:
-        pass
+    def __init__(self) -> None:
+        FakeClient.made += 1
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """A test client with the dropdown caches pre-filled, so nothing goes looking online."""
     monkeypatch.setattr(web, "MondayClient", FakeClient)
+    web._CLIENT.clear()  # so the shared client is made from the fake
     web._TASKS.clear()
     web._PEOPLE[:] = PEOPLE
     # Pre-filled, so no route goes looking for the epic board either.
@@ -118,6 +122,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     web._EPICS.clear()
     web._PORTFOLIO.clear()
     web._DAM_EPICS.clear()
+    web._CLIENT.clear()
 
 
 @pytest.fixture
@@ -1071,3 +1076,24 @@ def test_planning_this_quarter_switch_narrows_to_epics_due_by_the_quarter_end(pl
     assert 'name="this_quarter"' in page_html and "checked" in page_html.split('name="this_quarter"')[1][:40]
     assert f'title="{pl.THIS_QUARTER_HELP}"' in page_html
     assert "this_quarter=1" in page_html
+
+
+# --- the shared client ------------------------------------------------------------------
+
+
+def test_every_route_shares_one_client_rather_than_a_session_each(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client per route was a fresh TLS handshake per page render and filter change."""
+    monkeypatch.setattr(bd, "fetch_sprint_items", lambda client: [])
+    before = FakeClient.made
+    client.get("/sprint_view", params={"person": web.EVERYONE}, headers=HTMX)
+    client.get("/sprint_view", params={"person": web.EVERYONE, "open_only": "1"}, headers=HTMX)
+    assert FakeClient.made - before == 1
+
+
+def test_the_shared_client_is_closed_when_the_server_shuts_down(client: TestClient) -> None:
+    shared = web.monday_client()
+    with TestClient(web.app):
+        pass  # entering and leaving runs the app's startup and shutdown
+    assert shared.closed
