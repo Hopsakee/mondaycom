@@ -18,7 +18,9 @@ that block it are carried along by name so the overview can link straight to the
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any
 
 from mondaycom import queries
@@ -273,14 +275,21 @@ def fetch_epics(
     """Every epic with its point totals, plus the totals of tasks linked to no epic.
 
     Six requests and a couple of thousand items on the done board, so callers are
-    expected to cache the result rather than fetch it per keystroke.
+    expected to cache the result rather than fetch it per keystroke. The boards do not
+    depend on each other — only the pages within one are cursor-bound — so each is read
+    concurrently, and the done board's long chain no longer waits for the others. The
+    task boards go to pool threads, the epic board stays on this one (and its session);
+    the client gives every thread its own session, and the merge stays here.
     """
-    epics = fetch_epic_rows(client, board)
+    with ThreadPoolExecutor(max_workers=len(task_boards)) as pool:
+        task_reads = [pool.submit(client.all_board_items, partial(queries.board_tasks, b)) for b in task_boards]
+        epics = fetch_epic_rows(client, board)
+        task_items = [read.result() for read in task_reads]
+
     tally: dict[str, Points] = {}
     blocked: dict[str, list[Impediment]] = {}
     orphans = Points()
-    for task_board in task_boards:
-        items = client.all_board_items(lambda cursor, b=task_board: queries.board_tasks(b, cursor))  # type: ignore[misc]
+    for task_board, items in zip(task_boards, task_items, strict=True):
         walked = walk_tasks(items, task_board)
         for epic_id, points in walked.tally.items():
             tally[epic_id] = tally.get(epic_id, Points()) + points
