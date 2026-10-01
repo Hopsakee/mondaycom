@@ -1139,3 +1139,30 @@ def test_the_shared_client_is_closed_when_the_server_shuts_down(client: TestClie
     with TestClient(web.app):
         pass  # entering and leaving runs the app's startup and shutdown
     assert shared.closed
+
+
+# --- the page shells build no filter block ------------------------------------------------
+
+
+@pytest.mark.parametrize(("path", "module", "fn"), [("/epics", ep, "status_counts"), ("/portfolio", pf, "attach")])
+def test_a_page_shell_leaves_the_filter_options_to_the_first_table(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, path: str, module: Any, fn: str
+) -> None:
+    """The deferred table brings the options and counts (`fields=1`); computing them in
+    the shell as well was a second full pass over the rows on every page load."""
+    calls: list[int] = []
+    real = getattr(module, fn)
+    monkeypatch.setattr(module, fn, lambda *a, **kw: calls.append(1) or real(*a, **kw))
+    body = client.get(path).text
+    assert calls == []
+    assert 'hx-trigger="load"' in body and "fields=1" in body
+
+
+def test_a_page_shell_keeps_every_filter_it_was_given(client: TestClient) -> None:
+    """Its dropdowns have no options yet, but the chosen value is one of them, so touching
+    another control before the table arrives does not quietly drop it."""
+    body = client.get("/epics", params={"owner": "Agnes Dubbink", "status": "Done", "search": "water"}).text
+    assert re.search(r'<option value="Agnes Dubbink" selected>', body)
+    assert '<input type="hidden" name="status" value="Done">' in body
+    assert 'value="water"' in body
+    assert 'class="chip"' not in body, "no chips counted from no rows"
