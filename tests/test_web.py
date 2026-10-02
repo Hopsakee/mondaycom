@@ -178,7 +178,7 @@ def epic_options(body: str) -> list[str]:
 
 
 def task_names(body: str) -> list[str]:
-    return re.findall(r'aria-label="Include ([^"]*) in the markdown"', body)
+    return re.findall(r'aria-label="Neem ([^"]*) op in de markdown"', body)
 
 
 def tiles(body: str) -> dict[str, str]:
@@ -205,54 +205,54 @@ def test_the_nav_has_three_pages_and_marks_the_current_one(client: TestClient, s
 
 def test_person_dropdown_offers_me_everyone_and_each_person(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/").text
-    assert f'<option value="{ASSIGNED_TO_ME}" selected>Me</option>' in body
-    assert f'<option value="{web.EVERYONE}">Everyone</option>' in body
+    assert f'<option value="{ASSIGNED_TO_ME}" selected>Ik</option>' in body
+    assert f'<option value="{web.EVERYONE}">Iedereen</option>' in body
     assert '<option value="23029337">Agnes Dubbink</option>' in body
 
 
 def test_the_default_slice_is_mine_and_says_so(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/").text
-    assert f"{ME} — 2 of 3 tasks in the sprint group" in body, "one owned, one reviewed"
-    assert "points counted as Trekker only" in body
-    assert tiles(body)["Committed"] == "3", "the reviewed task's 5 points are Agnes's"
+    assert f"{ME} — 2 van 3 taken in de sprintgroep" in body, "one owned, one reviewed"
+    assert "punten tellen alleen voor de Trekker" in body
+    assert tiles(body)["Toegezegd"] == "3", "the reviewed task's 5 points are Agnes's"
 
 
 def test_everyone_is_the_whole_group_and_says_nothing(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/", params={"person": web.EVERYONE}).text
-    assert "tasks in the sprint group" not in body, "nothing was filtered, so say nothing"
-    assert tiles(body)["Committed"] == "10"
+    assert "taken in de sprintgroep" not in body, "nothing was filtered, so say nothing"
+    assert tiles(body)["Toegezegd"] == "10"
     assert task_names(body) == ["Bouw het dashboard", "Review waterschapsmodel", "Klaar hiermee"]
 
 
 def test_a_specific_person_is_matched_by_name(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/sprint_view", params={"person": "23029337"}, headers=HTMX).text
-    assert "Agnes Dubbink — 2 of 3 tasks in the sprint group" in body
+    assert "Agnes Dubbink — 2 van 3 taken in de sprintgroep" in body
     assert task_names(body) == ["Bouw het dashboard", "Review waterschapsmodel"]
 
 
 def test_an_unknown_person_is_an_error_in_place_not_a_500(client: TestClient, sprint_group: Any) -> None:
     response = client.get("/sprint_view", params={"person": "999"}, headers=HTMX)
-    assert response.status_code == 200 and "Unknown person" in response.text and 'id="sprint"' in response.text
+    assert response.status_code == 200 and "Onbekende persoon" in response.text and 'id="sprint"' in response.text
 
 
 def test_the_epic_dropdown_only_offers_epics_in_the_scope(client: TestClient, sprint_group: Any) -> None:
     mine = client.get("/").text
-    assert epic_options(mine) == ["All epics", "Kernregistratie"]
+    assert epic_options(mine) == ["Alle epics", "Kernregistratie"]
     everyone = client.get("/", params={"person": web.EVERYONE}).text
-    assert epic_options(everyone) == ["All epics", "Kernregistratie", "Waterbalans"]
+    assert epic_options(everyone) == ["Alle epics", "Kernregistratie", "Waterbalans"]
 
 
 def test_picking_an_epic_narrows_the_chart_and_the_table(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/sprint_view", params={"person": web.EVERYONE, "epic": "1999099384"}, headers=HTMX).text
     assert task_names(body) == ["Bouw het dashboard"]
-    assert tiles(body)["Committed"] == "2"
-    assert "everyone · Waterbalans — 1 of 3 tasks in the sprint group" in body
+    assert tiles(body)["Toegezegd"] == "2"
+    assert "iedereen · Waterbalans — 1 van 3 taken in de sprintgroep" in body
 
 
 def test_an_epic_that_left_the_scope_falls_back_to_all(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/", params={"epic": "1999099384"}).text  # mine, and Waterbalans is not mine
     assert task_names(body) == ["Review waterschapsmodel", "Klaar hiermee"]
-    assert f'<option value="{web.ALL_EPICS}" selected>All epics</option>' in body
+    assert f'<option value="{web.ALL_EPICS}" selected>Alle epics</option>' in body
 
 
 def test_the_partial_refreshes_the_epic_list_and_the_date_field_out_of_band(
@@ -261,13 +261,15 @@ def test_the_partial_refreshes_the_epic_list_and_the_date_field_out_of_band(
     body = client.get("/sprint_view", params={"person": web.EVERYONE}, headers=HTMX).text
     select = re.search(r'<select[^>]*name="epic"[^>]*>', body)
     assert select is not None and 'hx-swap-oob="true"' in select.group(0)
-    field = re.search(r'<input type="date" name="end"[^>]*>', body)
+    field = re.search(r'<span id="sprint-end" class="date-field"[^>]*>.*?</span>', body, re.S)
     assert field is not None and 'hx-swap-oob="true"' in field.group(0) and 'value="2026-09-06"' in field.group(0)
 
 
 def test_the_page_shows_the_window_it_settled_on_in_the_date_field(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/").text
-    assert re.search(r'<input type="date" name="end" value="2026-09-06"[^>]*id="sprint-end"', body)
+    field = re.search(r'id="sprint-end" class="date-field">\s*<input type="text" name="end" value="2026-09-06"', body)
+    assert field, "the window in use, as ISO text — a native date input would show it in the browser's locale"
+    assert 'name="end" value="2026-09-06"' in body and 'type="date" name=' not in body, "the picker is not submitted"
     assert "Sprint 2026-08-17 – 2026-09-06" in body
 
 
@@ -280,7 +282,7 @@ def test_dam_keeps_only_tasks_on_a_portfolio_epic(client: TestClient, sprint_gro
     web._DAM_EPICS.update({"e2"})
     body = client.get("/sprint_view", params={"person": web.EVERYONE, "dam": DAM}, headers=HTMX).text
     assert task_names(body) == ["Klaar hiermee"]
-    assert "everyone · dam only — 1 of 3 tasks" in body
+    assert "iedereen · alleen dam — 1 van 3 taken" in body
 
 
 def test_non_dam_keeps_everything_else_including_tasks_with_no_epic(client: TestClient, sprint_group: Any) -> None:
@@ -302,7 +304,7 @@ def test_no_portfolio_filter_never_reads_the_epic_board(
 def test_open_only_drops_done_from_the_table_but_not_from_the_burndown(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/sprint_view", params={"open_only": "on"}, headers=HTMX).text
     assert task_names(body) == ["Review waterschapsmodel"]
-    assert tiles(body)["Done"] == "3", "a burndown without its done tasks is not a burndown"
+    assert tiles(body)["Klaar"] == "3", "a burndown without its done tasks is not a burndown"
 
 
 def test_a_fetch_failure_is_shown_in_place_not_raised(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -355,7 +357,7 @@ def test_a_page_load_and_the_refresh_button_read_the_group_afresh(
 
 def test_the_refresh_button_keeps_the_filters(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/").text
-    button = re.search(r"<button[^>]*>Refresh from monday.com</button>", body)
+    button = re.search(r"<button[^>]*>Opnieuw ophalen van monday.com</button>", body)
     assert button and 'hx-include="#sprint-filters"' in button.group(0)
     assert "refresh=1" in button.group(0)
 
@@ -368,8 +370,8 @@ def test_the_person_filter_lists_review_work_but_does_not_count_its_points(
 ) -> None:
     body = client.get("/sprint_view", params={"person": ASSIGNED_TO_ME}, headers=HTMX).text
     assert task_names(body) == ["Review waterschapsmodel", "Klaar hiermee"], "the one he reviews is in the list"
-    assert tiles(body)["Committed"] == "3", "3 owned; the 5 he only reviews are Agnes's points"
-    assert "8 points · 3 as Trekker" in body, "the list's own total says which share counts for him"
+    assert tiles(body)["Toegezegd"] == "3", "3 owned; the 5 he only reviews are Agnes's points"
+    assert "8 punten · 3 als Trekker" in body, "the list's own total says which share counts for him"
 
 
 def test_a_done_task_is_struck_through_but_still_ticked(client: TestClient, sprint_group: Any) -> None:
@@ -413,7 +415,7 @@ def test_the_per_person_row_has_the_whole_slice_first_then_everyone_with_a_task(
     body = client.get("/sprint_view", params={"person": web.EVERYONE}, headers=HTMX).text
     cards = body.split('<div class="multiple">')[1:]
     assert len(cards) == 3
-    assert "<strong>Everyone</strong>" in cards[0]
+    assert "<strong>Iedereen</strong>" in cards[0]
     assert 'title="Agnes Dubbink"' in cards[1] and f'title="{ME}"' in cards[2]
     assert all("<footer" in card and 'class="tag tone-' in card.split("<footer")[1] for card in cards), (
         "each card carries its verdict"
@@ -425,7 +427,7 @@ def test_the_per_person_row_has_no_card_for_someone_who_only_reviews(client: Tes
     cards = body.split('<div class="multiple">')[1:]
     assert len(cards) == 3, "Everyone, Agnes and Jelle — the reviewer of Agnes's task is Jelle, who owns one too"
     jelle = next(card for card in cards if f'title="{ME}"' in card)
-    assert "0 of 3 left" in jelle, "his card holds the 3 points he is Trekker of, not the 5 he reviews"
+    assert "nog 0 van 3" in jelle, "his card holds the 3 points he is Trekker of, not the 5 he reviews"
 
 
 def test_the_per_person_row_ignores_the_person_filter_but_not_the_others(client: TestClient, sprint_group: Any) -> None:
@@ -437,7 +439,7 @@ def test_the_per_person_row_ignores_the_person_filter_but_not_the_others(client:
 
 def test_the_burndown_tiles_carry_the_verdict_tone(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/sprint_view", headers=HTMX).text
-    assert re.search(r'<div class="kpi tone-(good|warning|critical|neutral)">\s*<small>Remaining</small>', body)
+    assert re.search(r'<div class="kpi tone-(good|warning|critical|neutral)">\s*<small>Resterend</small>', body)
 
 
 # --- the markdown --------------------------------------------------------------------
@@ -506,7 +508,17 @@ def test_the_epics_page_offers_the_remaining_filters_and_the_status_chips(client
 
 def test_the_epics_table_shows_every_asked_for_column(client: TestClient) -> None:
     body = client.get("/epic_table_rows", headers=HTMX).text
-    headings = ("Item", "Status epic", "Stuck", "Trekker", "Portfolio", "Priority", "STP done", "STP left", "Progress")
+    headings = (
+        "Epic",
+        "Status epic",
+        "Vast",
+        "Trekker",
+        "Portfolio",
+        "Prioriteit",
+        "STP klaar",
+        "STP te gaan",
+        "Voortgang",
+    )
     for heading in headings:
         assert f">{heading}" in body, heading
 
@@ -516,7 +528,7 @@ def test_a_row_carries_its_status_trekker_portfolio_priority_and_battery(client:
     assert "Waterbalans" in body and "Fransje van Oorschot" in body and ">High<" in body
     assert "Kernregistratie" in body, "the linked IV Portfolio item's name"
     assert 'class="battery"' in body and ">83%<" in body, "the row battery says the percentage"
-    assert "94 done, 19 still open, 113 committed" in body, "and its tooltip the points"
+    assert "94 klaar, 19 nog open, 113 in totaal" in body, "and its tooltip the points"
 
 
 def test_epic_status_and_priority_wear_a_tone_dot_beside_the_label(client: TestClient) -> None:
@@ -540,7 +552,7 @@ def test_several_trekkers_become_several_persons(client: TestClient) -> None:
 
 def test_an_epic_with_no_tasks_gets_an_empty_battery_not_a_zero_one(client: TestClient) -> None:
     body = client.get("/epic_table_rows", headers=HTMX).text
-    assert 'class="battery empty"' in body and "no tasks" in body
+    assert 'class="battery empty"' in body and "geen taken" in body
 
 
 def test_every_column_has_a_sortable_header(client: TestClient) -> None:
@@ -627,13 +639,13 @@ def test_the_pressed_chip_is_the_current_status(client: TestClient) -> None:
 
 def test_filtering_everything_out_says_so_instead_of_showing_an_empty_table(client: TestClient) -> None:
     body = client.get("/epic_table_rows", params={"search": "bestaat niet"}, headers=HTMX).text
-    assert "No epics match these filters." in body
+    assert "Geen epics die aan deze filters voldoen." in body
 
 
 def test_the_summary_counts_the_selection_and_the_whole_board(client: TestClient) -> None:
     body = client.get("/epic_table_rows", params={"status": "Done"}, headers=HTMX).text
-    assert tiles(body) == {"Epics": "1", "Done": "12", "Left": "0"}
-    assert "of 4 on the epic board" in body
+    assert tiles(body) == {"Epics": "1", "Klaar": "12", "Te gaan": "0"}
+    assert "van de 4 op het epic-bord" in body
 
 
 def test_the_summary_battery_is_the_wide_one_and_covers_the_selection(client: TestClient) -> None:
@@ -646,7 +658,7 @@ def test_points_on_no_epic_are_reported_rather_than_quietly_dropped(client: Test
     web._ORPHANS = ep.Points(done=181, remaining=12, tasks=150)
     try:
         body = client.get("/epic_table_rows", headers=HTMX).text
-        assert "150 sprint tasks (193 points)" in body and "linked to no epic" in body
+        assert "150 sprinttaken (193 punten)" in body and "hangen aan geen enkele epic" in body
     finally:
         web._ORPHANS = ep.Points()
 
@@ -715,7 +727,7 @@ def test_an_empty_epic_board_says_so(client: TestClient, monkeypatch: pytest.Mon
     monkeypatch.setattr(ep, "fetch_epics", lambda client: ([], ep.Points()))
     web._EPICS.clear()
     body = client.get("/epic_table_rows", headers=HTMX).text
-    assert "The epic board came back empty." in body
+    assert "Het epic-bord kwam leeg terug." in body
 
 
 # --- the stuck marker ---------------------------------------------------------------------
@@ -736,7 +748,7 @@ def test_an_epic_on_impediment_is_marked_and_links_to_itself(client: TestClient)
 def test_a_blocking_task_is_named_counted_and_linked(client: TestClient) -> None:
     web._EPICS[:] = [HELD_UP]
     body = client.get("/epic_table_rows", headers=HTMX).text
-    assert ">1 task</span>" in body, "one task, singular"
+    assert ">1 taak</span>" in body, "one task, singular"
     assert f'href="{BLOCKER.url}"' in body and "Wachten op de leverancier" in body
     assert "Sprint bord, actief" in body, "which board it is parked on"
 
@@ -744,7 +756,7 @@ def test_a_blocking_task_is_named_counted_and_linked(client: TestClient) -> None
 def test_an_epic_blocked_from_both_sides_says_both(client: TestClient) -> None:
     web._EPICS[:] = [epic("Dubbel", id="e7", status="Impediment", impediments=(BLOCKER, BLOCKER))]
     body = client.get("/epic_table_rows", headers=HTMX).text
-    assert ">epic + 2 tasks</span>" in body
+    assert ">epic + 2 taken</span>" in body
 
 
 def test_only_stuck_narrows_to_the_blocked_epics(client: TestClient) -> None:
@@ -782,9 +794,9 @@ def test_the_portfolio_page_defers_the_fetch_to_a_second_request(client: TestCli
 
 def test_the_portfolio_table_shows_every_asked_for_column(client: TestClient) -> None:
     body = client.get("/portfolio_table_rows", headers=HTMX).text
-    for heading in ("Item", "Stuck", "Doelstelling", "Type", "Urgentie", "Projectleider", "Epics"):
+    for heading in ("Portfolio-item", "Vast", "Doelstelling", "Type", "Urgentie", "Projectleider", "Epics"):
         assert f">{heading}" in body, heading
-    for heading in ("STP done", "STP left", "Progress"):
+    for heading in ("STP klaar", "STP te gaan", "Voortgang"):
         assert f">{heading}" in body, heading
 
 
@@ -793,7 +805,7 @@ def test_a_row_sums_the_epics_under_it_and_links_to_them(client: TestClient) -> 
     assert portfolio_names(body) == ["Kernregistratie"], "the other two have no epics"
     assert '<a href="/portfolio_item?item=p1">Kernregistratie</a>' in body
     assert ">Run op orde<" in body and ">Niek Kleine<" in body
-    assert "12 done, 0 still open, 12 committed" in body, "e2's points, from the epic board"
+    assert "12 klaar, 0 nog open, 12 in totaal" in body, "e2's points, from the epic board"
 
 
 def test_urgentie_wears_a_priority_mark_not_a_status_dot(client: TestClient) -> None:
@@ -842,10 +854,10 @@ def test_a_portfolio_header_click_re_sorts_and_the_form_remembers_it(client: Tes
 def test_a_stuck_epic_makes_its_portfolio_item_stuck(client: TestClient) -> None:
     web._EPICS[:] = [*EPICS, HELD_UP, ON_IMPEDIMENT]
     body = client.get("/portfolio_table_rows", headers=HTMX).text
-    assert ">2 epics</span>" in body, "both of p1's blocked epics, rolled up"
+    assert ">2 epics vast</span>" in body, "both of p1's blocked epics, rolled up"
     assert "Vastgelopen koppeling" in body and "Zit muurvast" in body
     assert f'href="{BLOCKER.url}"' in body, "and the blocking task is still one click away"
-    assert tiles(body)["Stuck"] == "1"
+    assert tiles(body)["Vastgelopen"] == "1"
 
 
 def test_only_stuck_narrows_the_portfolio_too(client: TestClient) -> None:
@@ -856,19 +868,19 @@ def test_only_stuck_narrows_the_portfolio_too(client: TestClient) -> None:
 
 def test_the_portfolio_summary_counts_the_selection_and_the_whole_board(client: TestClient) -> None:
     body = client.get("/portfolio_table_rows", headers=HTMX).text
-    assert tiles(body) == {"Portfolio items": "1", "Done": "12", "Left": "0"}
-    assert "of 3 on the board · 1 epics" in body
+    assert tiles(body) == {"Portfolio-items": "1", "Klaar": "12", "Te gaan": "0"}
+    assert "van de 3 op het bord · 1 epics" in body
 
 
 def test_epics_pointing_at_a_missing_portfolio_item_are_reported(client: TestClient) -> None:
     web._EPICS[:] = [epic("Zwevend", ("weg",), id="e9", remaining=7)]
     body = client.get("/portfolio_table_rows", headers=HTMX).text
-    assert "1 epics (7 points) name a portfolio item" in body
+    assert "1 epics (7 punten) noemen een portfolio-item" in body
 
 
 def test_filtering_the_portfolio_out_says_so_instead_of_showing_an_empty_table(client: TestClient) -> None:
     body = client.get("/portfolio_table_rows", params={"search": "bestaat niet"}, headers=HTMX).text
-    assert "No portfolio items match these filters." in body
+    assert "Geen portfolio-items die aan deze filters voldoen." in body
 
 
 def test_the_portfolio_dropdowns_arrive_with_the_first_table(client: TestClient) -> None:
@@ -919,7 +931,7 @@ def test_an_empty_portfolio_board_says_so(client: TestClient, monkeypatch: pytes
     monkeypatch.setattr(pf, "fetch_items", lambda client: [])
     web._PORTFOLIO.clear()
     body = client.get("/portfolio_table_rows", headers=HTMX).text
-    assert "The IV Portfolio board came back empty." in body
+    assert "Het IV Portfolio-bord kwam leeg terug." in body
 
 
 # --- one portfolio item -------------------------------------------------------------------
@@ -940,7 +952,7 @@ def test_the_item_page_shows_its_fields_its_totals_and_its_epics(client: TestCli
     assert ">Run op orde<" in body and ">Project<" in body and ">Niek Kleine<" in body
     assert f'href="{PORTFOLIO[0].link}"' in body and ">169115</a>" in body, "the Fortes link, by its id"
     assert "boards/5097962810/pulses/p1" in body, "and the item on monday.com"
-    assert tiles(body) == {"Epics": "2", "Done": "14", "Left": "8", "Stuck": "1"}
+    assert tiles(body) == {"Epics": "2", "Klaar": "14", "Te gaan": "8", "Vastgelopen": "1"}
     assert "Vastgelopen koppeling" in body and "Kernregistratie" in body
 
 
@@ -963,12 +975,12 @@ def test_the_item_page_puts_the_blocked_epics_first(client: TestClient) -> None:
 
 def test_an_item_with_no_epics_says_so_rather_than_showing_an_empty_table(client: TestClient) -> None:
     body = client.get("/portfolio_item_view", params={"item": "p2"}, headers=HTMX).text
-    assert "No epics are linked to this portfolio item." in body
+    assert "Er zijn geen epics aan dit portfolio-item gekoppeld." in body
 
 
 def test_an_unknown_item_is_a_message_not_a_500(client: TestClient) -> None:
     response = client.get("/portfolio_item_view", params={"item": "bestaat-niet"}, headers=HTMX)
-    assert response.status_code == 200 and "No portfolio item with that id" in response.text
+    assert response.status_code == 200 and "Er is geen portfolio-item met dat id" in response.text
 
 
 def test_closing_the_live_reload_socket_is_not_an_asgi_error(client: TestClient) -> None:
@@ -1036,11 +1048,11 @@ def test_planning_view_shows_disciplines_queue_and_what_is_left_out(planned: Tes
     html = planned.get("/planning_view", params={"start": "2026-10-05", "end": "2026-11-18"}, headers=HTMX).text
     assert 'id="planning"' in html
     # 40 DE points against 10 per sprint over two sprints: 200%, overbooked, said in words.
-    assert "200% · overbooked" in html
+    assert "200% · overboekt" in html
     assert "Waterbalans" in html
     # Backlog is not shown by default, and the unlinked epic is reported with its fix.
     assert "Backlogding" not in html
-    assert "Nog niet gekoppeld" in html and "not linked on Epics-STP-distribution" in html
+    assert "Nog niet gekoppeld" in html and "niet gekoppeld op Epics-STP-distribution" in html
     # The dates come back out of band, so the fields show the window in use.
     assert 'id="planning-dates"' in html and 'hx-swap-oob="true"' in html
 
@@ -1050,7 +1062,7 @@ def test_planning_view_layers_are_checkboxes(planned: TestClient) -> None:
         "/planning_view", params={"start": "2026-10-05", "end": "2026-11-18", "layer": ["backlog"]}, headers=HTMX
     ).text
     assert "Backlogding" in html
-    assert "Waterbalans" not in html.split("Epics</h3>")[1].split("Next sprint")[0]
+    assert "Waterbalans" not in html.split("Epics</h3>")[1].split("Volgende sprint")[0]
 
 
 def test_planning_view_defaults_the_window_from_the_current_sprint(planned: TestClient) -> None:
@@ -1077,25 +1089,25 @@ def test_planning_dam_filter_scopes_the_queue_and_the_load(planned: TestClient) 
     window = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
     dam = planned.get("/planning_view", params={**window, "dam": DAM}, headers=HTMX).text
     assert "Waterbalans" in dam and "Backlogding" not in dam
-    assert "DAM only" in dam
+    assert "Alleen DAM" in dam
     non_dam = planned.get("/planning_view", params={**window, "dam": NON_DAM}, headers=HTMX).text
-    epics_part = non_dam.split("Epics</h3>")[1].split("Next sprint")[0]
+    epics_part = non_dam.split("Epics</h3>")[1].split("Volgende sprint")[0]
     assert "Backlogding" in epics_part and "Waterbalans" not in epics_part
     # Only the selection takes capacity: 5 DE points of 20, not the 45 of both halves.
-    assert "25%" in non_dam and "% · overbooked" not in non_dam
+    assert "25%" in non_dam and "% · overboekt" not in non_dam
 
 
 def test_planning_explains_itself_with_the_selections_own_numbers(planned: TestClient) -> None:
     html = planned.get("/planning_view", params={"start": "2026-10-05", "end": "2026-11-18"}, headers=HTMX).text
-    assert "How is this calculated?" in html
-    assert "Worked out for DE: 40.0 STP ÷ (10.0 STP per sprint × 2 sprints = 20.0) = 200%." in html
-    for help_text in pl.LAYER_HELP.values():
+    assert "Hoe wordt dit berekend?" in html
+    assert "Uitgerekend voor DE: 40.0 STP ÷ (10.0 STP per sprint × 2 sprints = 20.0) = 200%." in html
+    for help_text in pl.LAYER_HELP_NL.values():
         assert help_text in html
 
 
 def test_planning_layer_checkboxes_carry_their_definition_on_hover(planned: TestClient) -> None:
     html = planned.get("/planning").text
-    assert f'title="{pl.LAYER_HELP[pl.PROMISED]}"' in html
+    assert f'title="{pl.LAYER_HELP_NL[pl.PROMISED]}"' in html
     assert 'name="dam"' in html
 
 
@@ -1104,7 +1116,7 @@ def test_planning_treats_an_unknown_dam_value_as_both(planned: TestClient) -> No
     response = planned.get("/planning_view", params=params, headers=HTMX)
     assert response.status_code == 200
     assert "Waterbalans" in response.text and "Backlogding" in response.text
-    assert "only" not in response.text.split('class="lede"')[1].split("</p>")[0]
+    assert "Alleen" not in response.text.split('class="lede-scope"')[1].split("</p>")[0]
     assert planned.get("/planning", params={"dam": "DAM"}).status_code == 200
 
 
@@ -1112,11 +1124,11 @@ def test_planning_this_quarter_switch_narrows_to_epics_due_by_the_quarter_end(pl
     params = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
     html = planned.get("/planning_view", params={**params, "this_quarter": "1"}, headers=HTMX).text
     # Neither fixture epic has a due date, so nothing is due by the quarter end.
-    assert "No epic in this selection" in html
-    assert "due by 2026-11-18" in html
+    assert "Geen epic in deze selectie" in html
+    assert "due uiterlijk 2026-11-18" in html
     page_html = planned.get("/planning", params={"this_quarter": "1"}).text
     assert 'name="this_quarter"' in page_html and "checked" in page_html.split('name="this_quarter"')[1][:40]
-    assert f'title="{pl.THIS_QUARTER_HELP}"' in page_html
+    assert f'title="{pl.THIS_QUARTER_HELP_NL}"' in page_html
     assert "this_quarter=1" in page_html
 
 
@@ -1166,3 +1178,148 @@ def test_a_page_shell_keeps_every_filter_it_was_given(client: TestClient) -> Non
     assert '<input type="hidden" name="status" value="Done">' in body
     assert 'value="water"' in body
     assert 'class="chip"' not in body, "no chips counted from no rows"
+
+
+# --- the huisstijl shell and the cards view -----------------------------------------------
+
+
+def test_every_page_is_dutch_light_by_default_and_carries_the_brand_bar(client: TestClient, sprint_group: Any) -> None:
+    body = client.get("/").text
+    assert '<html lang="nl" data-theme="light">' in body
+    assert ">WDODelta</a>" in body and "jouw waterschap" in body, "the internal pay-off"
+    assert "Waterschap Drents Overijsselse Delta (WDODelta)" in body, "the footer names the organisation once in full"
+    assert "Vivala Sans Rounded" in body and "#075895" in body
+
+
+@pytest.mark.parametrize("path", ["/", "/epics", "/portfolio", "/portfolio_item?item=p1", "/planning"])
+def test_every_page_has_the_view_switch_with_the_table_pressed_by_default(
+    client: TestClient, sprint_group: Any, path: str
+) -> None:
+    web._PLANNING[:] = [PLAN]
+    body = client.get(path).text
+    assert re.search(r'data-weergave="tabel" aria-pressed="true"', body), path
+    assert re.search(r'data-weergave="kaarten" aria-pressed="false"', body), path
+    client.cookies.set("weergave", "kaarten")
+    body = client.get(path).text
+    assert re.search(r'data-weergave="kaarten" aria-pressed="true"', body), "the cookie is the choice"
+    web._PLANNING.clear()
+
+
+def test_every_filter_form_is_marked_so_the_switch_can_re_ask_for_its_section(
+    client: TestClient, sprint_group: Any
+) -> None:
+    web._PLANNING[:] = [PLAN]
+    for path, form in (("/", "sprint"), ("/epics", "epic"), ("/portfolio", "portfolio"), ("/planning", "planning")):
+        assert re.search(rf'<form(?=[^>]*id="{form}-filters")(?=[^>]*data-refilter)', client.get(path).text), path
+    web._PLANNING.clear()
+
+
+def test_the_sprint_cards_are_a_board_of_lanes_with_the_same_selection(client: TestClient, sprint_group: Any) -> None:
+    client.cookies.set("weergave", "kaarten")
+    body = client.get("/sprint_view", params={"person": web.EVERYONE}, headers=HTMX).text
+    assert 'class="kanban"' in body and "<table" not in body.split('id="markdown-block"')[0].split("Taken")[-1]
+    assert task_names(body) == ["Bouw het dashboard", "Review waterschapsmodel", "Klaar hiermee"]
+    lanes = re.findall(r'<div aria-label="([^"]*)" class="lane">', body)
+    assert lanes == ["Te doen", "Wacht", "Klaar"], "only the lanes that hold a task, in workflow order"
+    assert re.search(r'<label class="taak tone-good done"', body), "a Done task is struck through, still ticked"
+
+
+def test_an_unknown_view_is_the_table(client: TestClient, sprint_group: Any) -> None:
+    client.cookies.set("weergave", "iets")
+    assert 'class="tasks"' in client.get("/sprint_view", params={"person": web.EVERYONE}, headers=HTMX).text
+
+
+def test_the_epic_cards_hold_the_rows_figures_and_sort_like_the_headers(client: TestClient) -> None:
+    client.cookies.set("weergave", "kaarten")
+    body = client.get("/epic_table_rows", headers=HTMX).text
+    assert "<table" not in body and body.count('class="kaart ') == 3, "dropped epics stay hidden"
+    assert 'class="sortbar"' in body and "resort=" in body
+    assert ">83%" in body and "94 van 113 STP" in body, "Waterbalans: 94 of 113 done"
+    assert "94 klaar, 19 nog open, 113 in totaal" in body, "the same battery as the row"
+    order = [name for name in ("Kernregistratie", "Waterbalans", "Nog niks gepland") if name in body]
+    assert sorted(order, key=body.index) == order, "the default sort, as in the table"
+
+
+def test_a_stuck_epic_card_wears_the_critical_rule_and_names_its_blockers(client: TestClient) -> None:
+    web._EPICS[:] = [*EPICS, HELD_UP]
+    client.cookies.set("weergave", "kaarten")
+    body = client.get("/epic_table_rows", headers=HTMX).text
+    card = re.search(r'<div class="kaart tone-critical[^"]*">.*?Vastgelopen koppeling.*?</details>', body, re.S)
+    assert card is not None and "Wachten op de leverancier" in card.group(0)
+
+
+def test_the_portfolio_cards_list_their_epics_and_link_to_the_item(client: TestClient) -> None:
+    client.cookies.set("weergave", "kaarten")
+    body = client.get("/portfolio_table_rows", headers=HTMX).text
+    assert 'class="card-grid wide"' in body
+    assert 'href="/portfolio_item?item=p1"' in body and 'class="elist"' in body
+    assert "Kernregistratie" in body and "12/12" in body, "e2's points under its item"
+
+
+def test_one_portfolio_items_cards_leave_out_the_shared_portfolio(client: TestClient) -> None:
+    web._EPICS[:] = [*EPICS, HELD_UP, ON_IMPEDIMENT]
+    client.cookies.set("weergave", "kaarten")
+    body = client.get("/portfolio_item_view", params={"item": "p1"}, headers=HTMX).text
+    assert "<h2>Kernregistratie</h2>" in body and body.count('class="kaart ') == 3
+    assert "Geen portfolio" not in body and 'href="/portfolio_item' not in body
+
+
+def test_the_planning_cards_open_with_capacity_and_booked_charts_side_by_side(planned: TestClient) -> None:
+    planned.cookies.set("weergave", "kaarten")
+    params = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
+    html = planned.get("/planning_view", params=params, headers=HTMX).text
+    pair = html.split('class="chart-pair"')[1].split('class="card-grid wide"')[0]
+    assert pair.count('class="hbars"') == 2, "capacity on the left, booked on the right"
+    assert pair.count('class="hrow"') == 2 * 4, "every discipline in both, in the same order"
+    # DE: Agnes, 10 STP a sprint at 100%, so 20 over the two sprints, both actual and ceiling.
+    assert "DE: 20.0 STP beschikbaar, 20.0 bij 100% beschikbaarheid" in pair
+    # DE: 40 promised + 5 backlog = 45 booked against 20: 225%, so the axis runs to 250%.
+    assert "DE: 225% geboekt, 45.0 van 20.0 STP" in pair
+    assert 'class="hbar booked tone-critical" style="width: 90.0%"' in pair, "225 of 250"
+    assert 'style="width: 10.0%"' in pair, "DB's 25%, on the same axis"
+    assert ">250%</span>" in pair
+    assert 'class="hbar booked tone-critical"' in pair
+    assert "DB: 25% geboekt, 5.0 van 20.0 STP" in pair and 'class="hbar booked tone-active"' in pair
+    assert "PO/AT: — geboekt" in pair and "PO/AT: 0%" not in pair, "nobody, and nothing to book: no 0%"
+    assert 'class="spbar"' not in html, "the per-sprint bars are gone"
+    assert "<h3>DE · Data engineering</h3>" in html and ">225%" in html and "overboekt" in html
+    assert "25.0 STP past niet in de periode" in html
+    assert "<h4" in html and "Toegezegd" in html
+    outside = re.sub(
+        r"<dialog.*?</dialog>", "", html.split("Per discipline")[1].split("Volgende sprint")[0], flags=re.S
+    )
+    assert "<table" not in outside, "the cards view holds no table, only the dialogs do"
+
+
+def test_a_discipline_card_is_folded_and_opens_every_epic_in_a_dialog(planned: TestClient) -> None:
+    planned.cookies.set("weergave", "kaarten")
+    params = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
+    html = planned.get("/planning_view", params=params, headers=HTMX).text
+    de = re.search(r'<div [^>]*class="kaart tone-critical opens".*?</dialog>', html, re.S)
+    assert de is not None and "showModal()" in de.group(0)
+    folded = de.group(0).split("<dialog")[0]
+    assert "<strong>2 epics</strong> in de rij" in folded and "Bekijk de epics" in folded
+    assert "Waterbalans" not in folded, "the list is in the dialog, not on the card"
+    dialog = de.group(0).split("<dialog")[1]
+    assert "Waterbalans" in dialog and "Backlogding" in dialog and ">S1</span><span>S2</span>" in dialog
+    # Waterbalans: 40 STP at 10 a sprint is four sprints, and the window holds two.
+    assert 'aria-label="Sprints volgens de prognose: vanaf S1, loopt door na de periode"' in dialog
+    assert "Donkerblauw: een sprint waarin DE volgens de prognose aan deze epic werkt" in dialog
+    assert 'aria-label="Sluiten"' in dialog
+    assert 'class="kaart tone-neutral"' in html, "a discipline with nothing to do has no dialog to open"
+
+
+def test_the_booked_axis_runs_to_the_highest_load_and_never_below_150_percent() -> None:
+    assert web.chart.booked_scale([0.4, 0.8]) == (1.5, 0.5), "room for the band and the 100% line"
+    assert web.chart.booked_scale([1.2, 1.9]) == (2.0, 0.5)
+    assert web.chart.booked_scale([3.6, 2.53, 2.15, 1.2]) == (4.0, 1.0), "360% on a 0–400% axis"
+    assert web.chart.booked_scale([]) == (1.5, 0.5)
+
+
+def test_every_date_field_is_iso_text_with_a_calendar(planned: TestClient) -> None:
+    html = planned.get("/planning").text
+    for name in ("start", "end"):
+        assert re.search(rf'<input type="text" name="{name}"[^>]*pattern="\\d\{{4\}}-\\d\{{2\}}-\\d\{{2\}}"', html), (
+            name
+        )
+    assert html.count('class="date-picker"') == 2 and html.count('aria-label="Kies een datum in de kalender"') == 2

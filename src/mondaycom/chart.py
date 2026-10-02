@@ -21,6 +21,8 @@ from fasthtml.svg import Circle, G, Line, Path, Rect, Svg, Text, Title
 
 from mondaycom.burndown import Burndown, fmt
 from mondaycom.epics import Points
+from mondaycom.planning import LOAD_BAND, LOAD_WORDS, load_tone
+from mondaycom.theme import BLAUW, DONKERBLAUW, GROEN, ORANJE, ROOD
 
 # Geometry, in SVG user units. The viewBox scales to whatever width the page gives it.
 W, H = 720, 300
@@ -28,187 +30,218 @@ PAD_L, PAD_R, PAD_T, PAD_B = 46, 18, 16, 34
 PLOT_W = W - PAD_L - PAD_R
 PLOT_H = H - PAD_T - PAD_B
 
-# Roles, not raw hex, everywhere below. Dark steps are chosen for the dark surface and
-# validated as a set; the toggle scope must beat the OS media query in both directions.
+# Roles, not raw hex, everywhere below. The values are the WDODelta huisstijl (see
+# `theme.py`): donkerblauw carries the one series that matters, blauw is "being worked
+# on", and groen / oranje / rood are kept for state. Dark mode is the huisstijl's
+# blue-on-dark, chosen by the toggle rather than by the OS — light is the default.
 # The tokens sit on :root so the tables outside the charts (a status tag in the task
 # list, an avatar in a filter summary) speak the same palette as the charts do.
 #
-# Tones are the reference status palette, which is fixed across themes and deliberately
-# distinct from the categorical slots so a state never impersonates a series:
-#   good #0ca30c · warning #fab219 · serious #ec835a · critical #d03b3b
-# `active` is the one accent hue (the burndown's actual line, the battery fill) and
-# `neutral` is the ink-grey for "not started". Warning and serious sit below 3:1 on the
-# light surface by design, so every tone ships as dot + label, never as colour alone.
-#: The dark steps, written once: the media query and the explicit `data-theme` scope
-#: both need them, and a palette tweak that lands in only one of the two is invisible
-#: until somebody switches themes by hand.
-_DARK = """
-  --surface-1: #1a1a19;
-  --text-secondary: #c3c2b7;
-  --text-muted: #a3a299;
-  --grid: #33332f;
-  --hairline: rgba(255, 255, 255, .10);
-  --series-actual: #3987e5;
-  --series-ideal: #8f8f88;
-  --meter-track: #104281;
-  --tone-active: #3987e5;
-  --tone-neutral: #8f8f88;
-  --tone-off: #52514e;
-  --avatar-bg: #33332f;
-  --avatar-ink: #c3c2b7;
-"""
-
-CHART_CSS = """
-:root {
-  --surface-1: #fcfcfb;
-  --text-secondary: #52514e;
-  --text-muted: #78766f;
-  --grid: #e6e5e1;
-  --hairline: rgba(11, 11, 11, .10);
-  --series-actual: #2a78d6;
+# Tones are the huisstijl's secondary palette, which is fixed across themes:
+#   good #93c01f (groen) · warning #f29100 (oranje) · critical #d74116 (rood)
+# `serious` has no colour of its own in the huisstijl, so it is the step between oranje
+# and rood. `active` is blauw and `neutral` the ink-grey for "not started". Groen and
+# oranje sit below 3:1 on white and close together for deuteranopes (validated), so
+# every tone ships as mark + label, never as colour alone.
+# The neutral inks and surfaces are the theme's own (`theme.THEME_CSS`) under the chart's
+# role names, so a palette tweak lands in one place; only the chart's own steps — the
+# series, the meter track, the tones — have values here, and dark steps where they differ.
+CHART_CSS = f"""
+:root {{
+  --surface-1: var(--surface);
+  --text-secondary: var(--ink-2);
+  --text-muted: var(--muted);
+  --grid: var(--line-2);
+  --hairline: rgba(7, 88, 149, .12);
+  --series-actual: {DONKERBLAUW};
   --series-ideal: #8a8a85;
-  --meter-track: #cde2fb;
-  --tone-good: #0ca30c;
-  --tone-warning: #fab219;
-  --tone-serious: #ec835a;
-  --tone-critical: #d03b3b;
-  --tone-active: #2a78d6;
+  --meter-track: #d3e5f2;
+  --tone-good: {GROEN};
+  --tone-warning: {ORANJE};
+  --tone-serious: #e2661a;
+  --tone-critical: {ROOD};
+  --tone-active: {BLAUW};
   --tone-neutral: #8a8a85;
-  --tone-off: #c3c2b7;
-  --avatar-bg: #e6e5e1;
-  --avatar-ink: #52514e;
-}
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) {__DARK__}
-}
-:root[data-theme="dark"] {__DARK__}
-.viz svg { width: 100%; height: auto; display: block; }
-.viz .tick { fill: var(--text-muted); font-size: 11px; }
-.viz .direct { font-size: 12px; font-weight: 600; }
-.viz figcaption { color: var(--text-secondary); font-size: .85rem; }
-.viz .hit:hover { fill: color-mix(in srgb, var(--series-actual) 8%, transparent); }
+  --tone-off: #c3c9ce;
+  --tone-brand: var(--series-actual);
+  --avatar-bg: #e3eef6;
+  --avatar-ink: {DONKERBLAUW};
+}}
+:root[data-theme="dark"] {{
+  --grid: var(--line);
+  --hairline: rgba(255, 255, 255, .12);
+  --series-actual: {BLAUW};
+  --series-ideal: #8f9aa3;
+  --meter-track: #1e4466;
+  --tone-neutral: #8f9aa3;
+  --tone-off: #3a5670;
+  --avatar-bg: #1a3754;
+  --avatar-ink: #c6d3de;
+}}
+.viz svg {{ width: 100%; height: auto; display: block; }}
+.viz .tick {{ fill: var(--text-muted); font-size: 11px; }}
+.viz .direct {{ font-size: 12px; font-weight: 600; }}
+.viz figcaption {{ color: var(--text-secondary); font-size: .85rem; }}
+.viz .hit:hover {{ fill: color-mix(in srgb, var(--series-actual) 8%, transparent); }}
 
-/* Stat tiles: label, value, note. The value is the point, so it is the one big thing on
-   the row; proportional figures, because nothing here has to align vertically. */
-.kpis { display: flex; flex-wrap: wrap; gap: .75rem 1.25rem; margin: .5rem 0 1rem; }
-.kpi {
-  flex: 1 1 9rem; padding: .55rem .8rem .6rem; border-radius: .5rem;
-  border: 1px solid var(--hairline); border-top: 3px solid var(--grid);
-}
-.kpi small { color: var(--text-muted); display: block; font-size: .8rem; line-height: 1.3; }
-.kpi strong { font-size: 1.75rem; font-weight: 600; line-height: 1.15; display: block; margin: .1rem 0; }
-.kpi .battery { margin-top: .45rem; }
-.kpi.tone-good { border-top-color: var(--tone-good); }
-.kpi.tone-warning { border-top-color: var(--tone-warning); }
-.kpi.tone-serious { border-top-color: var(--tone-serious); }
-.kpi.tone-critical { border-top-color: var(--tone-critical); }
-.kpi.tone-active { border-top-color: var(--tone-active); }
-.swatch { display: inline-block; width: 22px; height: 0; vertical-align: middle;
-          border-top-width: 2px; margin-right: .35rem; }
+/* Stat tiles: label, value, note, on a surface card whose top rule wears the tile's tone.
+   The value is the point, so it is the one big thing on the row. */
+.kpis {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .75rem;
+        margin: .5rem 0 1.1rem; }}
+.kpi {{
+  padding: .8rem 1rem .85rem; border-radius: 6px; background: var(--surface);
+  border: 1px solid var(--line); border-top: 4px solid var(--tone, var(--grid));
+  box-shadow: var(--shadow); min-width: 0;
+}}
+.kpi small {{ color: var(--text-muted); display: block; font-size: .8rem; line-height: 1.35; }}
+.kpi > small:first-child {{ font-weight: 700; }}
+.kpi strong {{ font-size: 2rem; font-weight: 700; line-height: 1.1; display: block; margin: .25rem 0 .15rem;
+              color: var(--ink); font-variant-numeric: tabular-nums; }}
+.kpi .battery {{ margin-top: .6rem; }}
+.kpi.wide {{ grid-column: span 2; }}
+.swatch {{ display: inline-block; width: 22px; height: 0; vertical-align: middle;
+          border-top-width: 2px; margin-right: .35rem; }}
 
 /* A state as a tag: a coloured dot beside the label. The label carries the meaning
    and stays in ink; the dot is the glance channel. */
-.tag { display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap; line-height: 1.2; }
-.tag .dot {
+.tag {{ display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap; line-height: 1.2; }}
+.tag .dot {{
   flex: none; width: .6rem; height: .6rem; border-radius: 50%;
   background: var(--tone); box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 35%, transparent);
-}
-.tag.tone-off .dot { background: none; box-shadow: inset 0 0 0 2px var(--tone); }
-.tag.tone-off { color: var(--text-muted); }
-.tone-good { --tone: var(--tone-good); }
-.tone-warning { --tone: var(--tone-warning); }
-.tone-serious { --tone: var(--tone-serious); }
-.tone-critical { --tone: var(--tone-critical); }
-.tone-active { --tone: var(--tone-active); }
-.tone-neutral { --tone: var(--tone-neutral); }
-.tone-off { --tone: var(--tone-off); }
-.tag.priority .dot { border-radius: 2px; }
+}}
+.tag.tone-off .dot {{ background: none; box-shadow: inset 0 0 0 2px var(--tone); }}
+.tag.tone-off {{ color: var(--text-muted); }}
+.tone-good {{ --tone: var(--tone-good); }}
+.tone-warning {{ --tone: var(--tone-warning); }}
+.tone-serious {{ --tone: var(--tone-serious); }}
+.tone-critical {{ --tone: var(--tone-critical); }}
+.tone-active {{ --tone: var(--tone-active); }}
+.tone-neutral {{ --tone: var(--tone-neutral); }}
+.tone-off {{ --tone: var(--tone-off); }}
+.tone-brand {{ --tone: var(--tone-brand); }}
+.tag.priority .dot {{ border-radius: 2px; }}
 
 /* A person: a 24px round avatar and the name. The photo sits over the initials, so a
    picture that fails to load falls back to the letters instead of a broken image. */
-.person { display: inline-flex; align-items: center; gap: .45rem; white-space: nowrap; }
-.people { display: flex; flex-wrap: wrap; gap: .25rem .9rem; }
-.avatar {
+.person {{ display: inline-flex; align-items: center; gap: .45rem; white-space: nowrap; }}
+.people {{ display: flex; flex-wrap: wrap; gap: .25rem .9rem; }}
+.avatar {{
   position: relative; flex: none; width: 24px; height: 24px; border-radius: 50%;
   background: var(--avatar-bg); color: var(--avatar-ink); overflow: hidden;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: .62rem; font-weight: 600; letter-spacing: .02em; text-transform: uppercase;
   box-shadow: inset 0 0 0 1px var(--hairline);
-}
-.avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+}}
+.avatar img {{ position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }}
 
 /* The battery: a meter, so one fill on a track of a lighter step of the same blue
    ramp (light 100 / dark 650) rather than two peer series. Every track is the same
    fixed width so the fills compare across rows; the numbers beside it sit in a
    fixed-width slot for the same reason. They are always spelled out — the track is
    deliberately low-contrast, and a meter with no readable value is decoration. */
-.battery { display: inline-flex; align-items: center; gap: .55rem; }
-.battery .track {
+.battery {{ display: inline-flex; align-items: center; gap: .55rem; }}
+.battery .track {{
   flex: none; width: 7rem; height: 8px; border-radius: 4px; overflow: hidden;
   background: var(--meter-track);
-}
-.battery .fill { height: 100%; border-radius: 4px; background: var(--series-actual); }
-.battery .value { color: var(--text-secondary); font-size: .75rem; white-space: nowrap;
-                  font-variant-numeric: tabular-nums; min-width: 2.6rem; }
-.battery.empty .track { background: none; box-shadow: inset 0 0 0 1px var(--grid); }
-.battery.empty .value { color: var(--text-muted); }
-.battery.wide .track { width: 14rem; }
-.battery.wide .value { min-width: 6rem; font-size: .85rem; }
+}}
+.battery .fill {{ height: 100%; border-radius: 4px; background: var(--series-actual); }}
+.battery .value {{ color: var(--text-secondary); font-size: .75rem; white-space: nowrap;
+                  font-variant-numeric: tabular-nums; min-width: 2.6rem; }}
+.battery.empty .track {{ background: none; box-shadow: inset 0 0 0 1px var(--grid); }}
+.battery.empty .value {{ color: var(--text-muted); }}
+.battery.wide .track {{ width: 14rem; }}
+.battery.wide .value {{ min-width: 6rem; font-size: .85rem; }}
 
 /* The load meter: the battery's track and fill, on a fixed 0–150% scale so rows compare,
    with a tick where capacity runs out. Work past the tick is the critical tone, after a
    2px surface gap — and always with "overbooked" in words beside it, never colour alone. */
-.battery.load .track { display: flex; gap: 2px; position: relative; overflow: visible; }
-.battery.load .over { height: 100%; border-radius: 4px; background: var(--tone-critical); }
-.battery.load .mark { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px;
-                      background: var(--text-secondary); border-radius: 1px; }
-.battery.load .value { min-width: 3rem; }
+.battery.load .track {{ display: flex; gap: 2px; position: relative; overflow: visible; }}
+.battery.load .over {{ height: 100%; border-radius: 4px; background: var(--tone-critical); }}
+.battery.load .over.ok {{ background: var(--tone-good); }}
+.battery.load .mark {{ position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px;
+                      background: var(--text-secondary); border-radius: 1px; }}
+.battery.load .value {{ min-width: 3rem; }}
 
 /* Status chips: one tag per status with its count, the pressed one outlined. They are
    buttons, so they are keyboard-reachable, but they read as filter tokens. */
-.chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 .9rem; }
-.chip {
+.chips {{ display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 .9rem; }}
+.chip {{
   all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: .45rem;
   padding: .2rem .65rem; border-radius: 999px; font: inherit; font-size: .85rem;
   box-shadow: inset 0 0 0 1px var(--hairline);
-}
-.chip:hover { background: color-mix(in srgb, var(--tone-active) 8%, transparent); }
-.chip:focus-visible { outline: 2px solid var(--pico-primary-focus, #0172ad); outline-offset: 2px; }
-.chip[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--tone-active); }
-.chip .count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+}}
+.chip:hover {{ background: color-mix(in srgb, var(--tone-active) 8%, transparent); }}
+.chip:focus-visible {{ outline: 2px solid var(--tone-active); outline-offset: 2px; }}
+.chip {{ background: var(--surface); transition: background-color .15s ease, box-shadow .15s ease; }}
+.chip[aria-pressed="true"] {{ box-shadow: inset 0 0 0 2px var(--series-actual); font-weight: 600; }}
+.chip .count {{ color: var(--text-muted); font-variant-numeric: tabular-nums; }}
 
 /* The stuck marker: a critical tag you can open, because "blocked" is only actionable
    if you can reach the thing doing the blocking. Closed it is one tag wide, so a table
    of running epics stays quiet; open it lists the blockers as links out to monday.com. */
-.stuck { display: inline-block; }
+.stuck {{ display: inline-block; }}
 /* Three markers to suppress, not one: `display: inline-block` takes the summary off
    `list-item` (the UA triangle), `list-style` covers the browsers that ignore that, and
    `::after` is Pico's own chevron. The tag's dotted underline is what says "openable". */
-.stuck > summary { display: inline-block; cursor: pointer; list-style: none; }
-.stuck > summary::marker, .stuck > summary::-webkit-details-marker { content: ""; display: none; }
-.stuck > summary::after { display: none; }
-.stuck > summary:focus-visible { outline: 2px solid var(--pico-primary-focus, #0172ad); outline-offset: 2px; }
-.stuck > summary .tag { text-decoration: underline dotted; text-underline-offset: 3px; }
+.stuck > summary {{ display: inline-block; cursor: pointer; list-style: none; vertical-align: middle; }}
+.stuck > summary::marker, .stuck > summary::-webkit-details-marker {{ content: ""; display: none; }}
+.stuck > summary::after {{ display: none; }}
+.stuck > summary:focus-visible {{ outline: 2px solid var(--tone-active); outline-offset: 2px; }}
+.stuck > summary .tag {{ text-decoration: underline dotted; text-underline-offset: 3px; }}
 /* Wide enough for a task title to be readable, capped so opening one does not push the
    Progress meter out of the scroll window. */
-.blockers { list-style: none; margin: .4rem 0 .2rem; padding: 0; font-size: .82rem;
-            min-width: 10rem; max-width: 13rem; }
-.blockers li { list-style: none; margin: 0 0 .25rem; white-space: normal; }
-.blockers li + li.epic { margin-top: .5rem; }
-.blockers .where { color: var(--text-muted); font-size: .9em; display: block; }
-.blockers ul { list-style: none; margin: .15rem 0 0; padding-left: .85rem;
-               border-left: 2px solid var(--hairline); }
+.blockers {{ list-style: none; margin: .4rem 0 .2rem; padding: 0; font-size: .82rem;
+            min-width: 10rem; max-width: 13rem; }}
+.blockers li {{ list-style: none; margin: 0 0 .25rem; white-space: normal; }}
+.blockers li + li.epic {{ margin-top: .5rem; }}
+.blockers .where {{ color: var(--text-muted); font-size: .9em; display: block; }}
+.blockers ul {{ list-style: none; margin: .15rem 0 0; padding-left: .85rem;
+               border-left: 2px solid var(--hairline); }}
+
+/* The planning's horizontal bar charts: label, plot, value — one grid row per discipline,
+   so the two charts side by side line up. Thin bars with rounded ends, recessive
+   gridlines, the axis under the rows. */
+.hbars {{ display: flex; flex-direction: column; gap: .35rem; min-width: 0; }}
+.hrow {{ display: grid; grid-template-columns: minmax(6rem, 11rem) minmax(0, 1fr) 6.5rem; align-items: center;
+        gap: .7rem; min-height: 1.9rem; font-size: .85rem; }}
+.hlabel {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.hlabel small {{ color: var(--text-muted); }}
+.hplot {{ position: relative; height: 14px; }}
+.hbar {{ position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; }}
+.hbar.ceiling {{ background: var(--meter-track); }}
+.hbar.actual {{ background: var(--series-actual); top: 2px; bottom: 2px; }}
+.hbar.booked {{ background: var(--tone); }}
+.hgrid {{ position: absolute; top: -6px; bottom: -6px; width: 1px; background: var(--grid); }}
+.hband {{ position: absolute; top: -6px; bottom: -6px;
+         background: color-mix(in srgb, var(--tone-good) 22%, transparent); }}
+/* The 100% line sits on top of the bars: it is the one reference every bar is read against. */
+.htarget {{ position: absolute; top: -7px; bottom: -7px; width: 0; border-left: 2px dashed var(--text-secondary);
+           z-index: 1; }}
+.hvalue {{ font-variant-numeric: tabular-nums; white-space: nowrap; }}
+.hvalue small {{ color: var(--text-muted); }}
+.haxis {{ min-height: 1rem; }}
+.hticks {{ position: relative; height: 1rem; }}
+.hticks span {{ position: absolute; transform: translateX(-50%); color: var(--text-muted); font-size: .72rem; }}
+.hticks span:first-child {{ transform: none; }}
+.hlegend {{ display: flex; flex-wrap: wrap; gap: .2rem 1.1rem; font-size: .78rem; color: var(--text-secondary);
+           margin-bottom: .2rem; }}
+.hlegend > span {{ display: inline-flex; align-items: center; gap: .4rem; }}
+.hlegend .key {{ width: 1.1rem; height: 10px; border-radius: 0 3px 3px 0; display: inline-block; }}
+.hlegend .key.actual {{ background: var(--series-actual); }}
+.hlegend .key.ceiling {{ background: var(--meter-track); }}
 
 /* Small multiples: one burndown per person, each to its own scale, on the sprint's
    shared window. Each is a card with the person on top and the verdict as its tone. */
-.multiples { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: .75rem; }
-.multiple { border: 1px solid var(--hairline); border-radius: .5rem; padding: .5rem .7rem .45rem; min-width: 0; }
-.multiple header { display: flex; align-items: center; font-size: .85rem; margin-bottom: .3rem; min-width: 0; }
-.multiple header .person { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.multiple footer { display: flex; justify-content: space-between; align-items: center; gap: .5rem;
-                   margin-top: .25rem; font-size: .78rem; }
-.multiple footer .figures { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-""".replace("__DARK__", _DARK)
+.multiples {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: .75rem; }}
+.multiple {{ border: 1px solid var(--line); border-radius: 6px; padding: .6rem .8rem .5rem;
+            min-width: 0;
+            background: var(--surface); box-shadow: var(--shadow); }}
+.multiple header {{ display: flex; align-items: center; font-size: .85rem; margin-bottom: .3rem; min-width: 0; }}
+.multiple header .person {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; }}
+.multiple footer {{ display: flex; justify-content: space-between; align-items: center; gap: .5rem;
+                   margin-top: .25rem; font-size: .78rem; }}
+.multiple footer .figures {{ color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }}
+"""
 
 
 # --- state as colour --------------------------------------------------------------------
@@ -332,6 +365,18 @@ def people(names: str, photo_for: Callable[[str], str] = lambda _: "") -> Any:
     return Span(*[person(n, photo_for(n)) for n in listed], cls="people")
 
 
+def verdict_text(b: Burndown) -> str:
+    """`Burndown.verdict` in Dutch: the same `standing`, other words."""
+    kind, points = b.standing
+    return {
+        "over": "sprint voorbij",
+        "over-left": f"sprint voorbij, nog {fmt(points)} over",
+        "on-track": "op schema",
+        "ahead": f"{fmt(points)} punten voor",
+        "behind": f"{fmt(points)} punten achter",
+    }[kind]
+
+
 def nice_ceiling(value: float) -> tuple[float, float]:
     """Round `value` up to a clean axis maximum, and pick a clean tick step."""
     if value <= 0:
@@ -415,7 +460,7 @@ def burndown_svg(b: Burndown) -> Any:
         )
         marks.append(
             Text(
-                f"{fmt(v)} left",
+                f"nog {fmt(v)}",
                 x=x(i) - 10,
                 y=y(v) - 10,
                 text_anchor="end",
@@ -428,7 +473,7 @@ def burndown_svg(b: Burndown) -> Any:
     at = max(1, int(span * 0.72))
     labels = [
         Text(
-            "ideal",
+            "ideaal",
             x=x(at),
             y=y(b.days[at].ideal) - 11,
             text_anchor="middle",
@@ -449,10 +494,10 @@ def burndown_svg(b: Burndown) -> Any:
             cls="hit",
         )(
             Title(
-                f"{d.on:%a %d %b} · "
-                + (f"{fmt(d.remaining)} left" if d.remaining is not None else "not yet")
-                + f" · ideal {fmt(round(d.ideal))}"
-                + (f" · burned {fmt(d.burned)}" if d.burned else "")
+                f"{d.on} · "
+                + (f"nog {fmt(d.remaining)}" if d.remaining is not None else "nog niet")
+                + f" · ideaal {fmt(round(d.ideal))}"
+                + (f" · {fmt(d.burned)} afgerond" if d.burned else "")
             )
         )
         for i, d in enumerate(b.days)
@@ -474,7 +519,8 @@ def burndown_svg(b: Burndown) -> Any:
         viewBox=f"0 0 {W} {H}",
         role="img",
         aria_label=(
-            f"Burndown from {b.committed:g} points on {b.start} to {fmt(b.remaining)} left on {b.today}; {b.verdict}."
+            f"Burndown van {b.committed:g} punten op {b.start} naar nog {fmt(b.remaining)} "
+            f"op {b.today}; {verdict_text(b)}."
         ),
     )
 
@@ -514,10 +560,10 @@ def burndown_small(b: Burndown) -> Any:
         Path(d=ideal, fill="none", stroke="var(--series-ideal)", stroke_width=1.5, stroke_dasharray="4 3"),
         Path(d=actual, fill="none", stroke="var(--series-actual)", stroke_width=2, stroke_linejoin="round"),
         *marks,
-        Title(f"{fmt(b.committed)} committed, {fmt(b.remaining)} left — {b.verdict}"),
+        Title(f"{fmt(b.committed)} toegezegd, nog {fmt(b.remaining)} — {verdict_text(b)}"),
         viewBox=f"0 0 {SW} {SH}",
         role="img",
-        aria_label=f"{fmt(b.remaining)} of {fmt(b.committed)} points left; {b.verdict}.",
+        aria_label=f"Nog {fmt(b.remaining)} van {fmt(b.committed)} punten; {verdict_text(b)}.",
     )
 
 
@@ -526,7 +572,10 @@ def multiple(heading: Any, b: Burndown) -> Any:
     return Div(
         Header(heading),
         burndown_small(b),
-        Footer(tag(b.verdict, verdict_tone(b)), Span(f"{fmt(b.remaining)} of {fmt(b.committed)} left", cls="figures")),
+        Footer(
+            tag(verdict_text(b), verdict_tone(b)),
+            Span(f"nog {fmt(b.remaining)} van {fmt(b.committed)}", cls="figures"),
+        ),
         cls="multiple",
     )
 
@@ -536,9 +585,9 @@ def legend() -> Any:
     return Div(
         Small(
             Span(cls="swatch", style="border-top: 2px solid var(--series-actual)"),
-            "Actual remaining",
+            "Werkelijk resterend",
             Span(cls="swatch", style="border-top: 2px dashed var(--series-ideal); margin-left: 1.25rem"),
-            "Ideal",
+            "Ideaal",
         ),
         style="color: var(--text-secondary)",
     )
@@ -560,12 +609,12 @@ def kpis(b: Burndown) -> Any:
     others are counts, and a row of coloured tiles would say nothing.
     """
     tiles = [
-        ("Committed", fmt(b.committed), "points in the sprint group", ""),
-        ("Done", fmt(b.done), f"{b.counts.get('Done', 0)} tasks", ""),
-        ("Remaining", fmt(b.remaining), tag(b.verdict, verdict_tone(b)), f"tone-{verdict_tone(b)}"),
+        ("Toegezegd", fmt(b.committed), "punten in de sprintgroep", "tone-brand"),
+        ("Klaar", fmt(b.done), f"{b.counts.get('Done', 0)} taken", ""),
+        ("Resterend", fmt(b.remaining), tag(verdict_text(b), verdict_tone(b)), f"tone-{verdict_tone(b)}"),
     ]
     if b.cancelled:
-        tiles.append(("Cancelled", fmt(b.cancelled), "dropped, not burned", ""))
+        tiles.append(("Vervallen", fmt(b.cancelled), "geschrapt, niet afgerond", ""))
     return Div(*[tile(label, value, note, tone) for label, value, note, tone in tiles], cls="kpis")
 
 
@@ -580,21 +629,20 @@ def points_tiles(total: Points) -> list[Any]:
     Cancelled appears only when there is some: a zero tile for dropped work says nothing.
     """
     tiles = [
-        tile("Done", fmt(total.done), "story points", "tone-good"),
-        tile("Left", fmt(total.remaining), "story points", "tone-active"),
+        tile("Klaar", fmt(total.done), "story points", "tone-good"),
+        tile("Te gaan", fmt(total.remaining), "story points", "tone-active"),
     ]
     if total.cancelled:
-        tiles.append(tile("Cancelled", fmt(total.cancelled), "dropped, not counted"))
+        tiles.append(tile("Vervallen", fmt(total.cancelled), "geschrapt, telt niet mee"))
     return tiles
 
 
 def progress_tile(total: Points) -> Any:
     """The selection's own battery: the same meter as every row, at double length."""
     return Div(
-        Small("Progress"),
+        Small("Voortgang"),
         battery(total.done, total.remaining, wide=True),
-        cls="kpi",
-        style="flex-grow: 2",
+        cls="kpi wide",
     )
 
 
@@ -602,7 +650,7 @@ def burndown_table(b: Burndown) -> Any:
     """The same numbers as a table — the accessible view of the chart."""
     rows = [
         Tr(
-            Td(f"{d.on:%a %d %b}"),
+            Td(str(d.on)),
             Td(fmt(round(d.ideal)), style="text-align:right"),
             Td(fmt(d.remaining) if d.remaining is not None else "—", style="text-align:right"),
             Td(fmt(d.burned) if d.burned else "", style="text-align:right"),
@@ -611,13 +659,13 @@ def burndown_table(b: Burndown) -> Any:
     ]
     return Div(
         Table(
-            Caption(Small("Every day of the sprint, in points.")),
+            Caption(Small("Elke dag van de sprint, in punten.")),
             Thead(
                 Tr(
-                    Th("Day"),
-                    Th("Ideal", style="text-align:right"),
-                    Th("Remaining", style="text-align:right"),
-                    Th("Burned", style="text-align:right"),
+                    Th("Dag"),
+                    Th("Ideaal", style="text-align:right"),
+                    Th("Resterend", style="text-align:right"),
+                    Th("Afgerond", style="text-align:right"),
                 )
             ),
             Tbody(*rows),
@@ -640,9 +688,9 @@ def battery(done: float, remaining: float, wide: bool = False) -> Any:
     if not total:
         return Div(
             Div(cls="track"),
-            Span("no tasks", cls="value"),
+            Span("geen taken", cls="value"),
             cls=f"{cls} empty",
-            title="No sprint tasks are linked to this epic yet",
+            title="Er zijn nog geen sprinttaken aan gekoppeld",
         )
     percent = done / total * 100
     return Div(
@@ -653,11 +701,11 @@ def battery(done: float, remaining: float, wide: bool = False) -> Any:
             aria_valuenow=f"{done:g}",
             aria_valuemin="0",
             aria_valuemax=f"{total:g}",
-            aria_label=f"{fmt(done)} of {fmt(total)} story points done",
+            aria_label=f"{fmt(done)} van {fmt(total)} story points klaar",
         ),
         Span(f"{fmt(done)}/{fmt(total)} · {percent:.0f}%" if wide else f"{percent:.0f}%", cls="value"),
         cls=cls,
-        title=f"{fmt(done)} done, {fmt(remaining)} still open, {fmt(total)} committed",
+        title=f"{fmt(done)} klaar, {fmt(remaining)} nog open, {fmt(total)} in totaal",
     )
 
 
@@ -676,27 +724,156 @@ def load_meter(points: float, capacity: float) -> Any:
     if not capacity:
         return Div(
             Div(cls="track"),
-            Span("nobody" if points else "—", cls="value"),
+            Span("niemand" if points else "—", cls="value"),
             cls="battery load empty",
-            title="Nobody on Capaciteit has this role" if points else "Nothing queued, nobody to do it",
+            title="Niemand op Capaciteit heeft deze rol" if points else "Niets ingepland, niemand om het te doen",
         )
     load = points / capacity
     within = min(load, 1) / LOAD_SCALE * 100
     over = max(min(load, LOAD_SCALE) - 1, 0) / LOAD_SCALE * 100
-    value: Any = tag(f"{load:.0%} · overbooked", "critical") if load > 1 else f"{load:.0%}"
+    overbooked = load > LOAD_BAND[1]
+    value: Any = tag(f"{load:.0%} · overboekt", "critical") if overbooked else f"{load:.0%}"
     return Div(
         Div(
             Div(cls="fill", style=f"width: {within:.1f}%") if within else None,
-            Div(cls="over", style=f"width: {over:.1f}%") if over else None,
+            # Past 100% but inside the target band is still on target: green, not red.
+            Div(cls="over" if overbooked else "over ok", style=f"width: {over:.1f}%") if over else None,
             Span(cls="mark", style=f"left: {100 / LOAD_SCALE:.1f}%", aria_hidden="true"),
             cls="track",
             role="meter",
             aria_valuenow=f"{points:.1f}",
             aria_valuemin="0",
             aria_valuemax=f"{capacity:.1f}",
-            aria_label=f"{fmt(round(points, 1))} of {fmt(round(capacity, 1))} story points of capacity",
+            aria_label=f"{fmt(round(points, 1))} van {fmt(round(capacity, 1))} story points capaciteit",
         ),
         Span(value, cls="value"),
         cls="battery load",
-        title=f"{fmt(round(points, 1))} queued, {fmt(round(capacity, 1))} capacity",
+        title=f"{fmt(round(points, 1))} ingepland, {fmt(round(capacity, 1))} capaciteit",
     )
+
+
+# --- the planning's two horizontal bar charts -----------------------------------------
+# One row per discipline, side by side, in the same order: what each discipline *can* do
+# this quarter, and how much of that the selection books. HTML rather than SVG, because
+# the rows share the page's grid and wrap with it; every value is spelled out at the end
+# of its bar, and the bar itself carries the tooltip.
+
+
+def booked_scale(loads: list[float]) -> tuple[float, float]:
+    """The booked chart's axis: up to the highest load (never below the load meter's
+    `LOAD_SCALE`, so the band and the 100% line always have room), rounded up to a clean
+    step — 50% steps up to 300%, whole hundreds above that, so 360% reads on a 0–400% axis
+    and the bars keep their real proportions to each other."""
+    top = max([LOAD_SCALE, *loads])
+    step = 0.5 if top <= 3 else 1.0 if top <= 6 else 2.0
+    return math.ceil(top / step - 1e-9) * step, step
+
+
+def _ticks(top: float, step: float, label: Callable[[float], str]) -> Any:
+    """The value axis under a bar chart: recessive labels at every step."""
+    marks = []
+    value = 0.0
+    while value <= top + 1e-9:
+        marks.append(Span(label(value), style=f"left: {value / top * 100:.1f}%"))
+        value += step
+    return Div(Span(cls="hlabel"), Div(*marks, cls="hticks"), Span(cls="hvalue"), cls="hrow haxis", aria_hidden="true")
+
+
+def _gridlines(top: float, step: float) -> list[Any]:
+    lines = []
+    value = step
+    while value < top - 1e-9:
+        lines.append(Span(cls="hgrid", style=f"left: {value / top * 100:.1f}%"))
+        value += step
+    return lines
+
+
+def _hchart(legend: list[Any], rows: list[Any], top: float, step: float, label: Callable[[float], str]) -> Any:
+    """A horizontal bar chart: its legend, its rows, the axis under them."""
+    return Div(Div(*legend, cls="hlegend"), *rows, _ticks(top, step, label), cls="hbars")
+
+
+def _hrow(key: str, name: str, marks: list[Any], top: float, step: float, aria: str, title: str, value: Any) -> Any:
+    """One discipline's row: its label, its marks over the gridlines, its value spelled out."""
+    return Div(
+        Span(Strong(key), " ", Small(name), cls="hlabel"),
+        Div(*_gridlines(top, step), *marks, cls="hplot", role="img", aria_label=aria, title=title),
+        Span(*value, cls="hvalue"),
+        cls="hrow",
+    )
+
+
+def _at(value: float, top: float) -> str:
+    return f"{value / top * 100:.1f}%"
+
+
+def capacity_chart(rows: list[tuple[str, str, float, float]]) -> Any:
+    """STP per discipline in the quarter: what Capaciteit gives, against the ceiling.
+
+    `rows` are (key, name, actual, at 100% availability). An emphasis chart, not two peer
+    series: the actual capacity is the solid accent bar, the 100% ceiling the lighter
+    step of the same blue behind it, so the gap between them is the availability given
+    away. Both numbers are written out at the end of the row.
+    """
+    top, step = nice_ceiling(max([full for *_, full in rows] + [1.0]))
+    body = [
+        _hrow(
+            key,
+            name,
+            [
+                Span(cls="hbar ceiling", style=f"width: {_at(full, top)}"),
+                Span(cls="hbar actual", style=f"width: {_at(actual, top)}"),
+            ],
+            top,
+            step,
+            f"{key}: {actual:.1f} STP beschikbaar, {full:.1f} bij 100% beschikbaarheid",
+            f"{key} · {name}: {actual:.1f} STP beschikbaar van {full:.1f} bij 100% beschikbaarheid",
+            [Strong(f"{actual:.1f}"), Small(f" / {full:.1f}")],
+        )
+        for key, name, actual, full in rows
+    ]
+    legend = [
+        Span(Span(cls="key actual"), "Beschikbaar volgens Capaciteit"),
+        Span(Span(cls="key ceiling"), "Bij 100% beschikbaarheid"),
+    ]
+    return _hchart(legend, body, top, step, fmt)
+
+
+def booked_chart(rows: list[tuple[str, str, float | None, float, float]]) -> Any:
+    """The selection's STP per discipline as a share of its actual capacity.
+
+    `rows` are (key, name, load, booked STP, capacity STP); a load of `None` is work with
+    nobody to do it. One scale for every row, up to the highest load (`booked_scale`), so
+    360% is visibly longer than 253%; the target band shaded, 100% as a line, and each bar
+    in its band's tone — with the percentage in words, so the tone is never the only signal.
+    """
+    top, step = booked_scale([load for _, _, load, *_ in rows if load is not None])
+    low, high = LOAD_BAND
+    body = []
+    for key, name, load, booked, capacity in rows:
+        tone = load_tone(load) if booked else "neutral"
+        # Nothing booked and nobody to do it is not "0%": there is nothing to measure.
+        text = "—" if not capacity and not booked else "niemand" if load is None else f"{load:.0%}"
+        marks = [
+            Span(cls="hband", style=f"left: {_at(low, top)}; width: {_at(high - low, top)}"),
+            Span(cls=f"hbar booked tone-{tone}", style=f"width: {_at(load, top)}") if load else None,
+            Span(cls="htarget", style=f"left: {_at(1, top)}"),
+        ]
+        body.append(
+            _hrow(
+                key,
+                name,
+                marks,
+                top,
+                step,
+                f"{key}: {text} geboekt, {booked:.1f} van {capacity:.1f} STP",
+                f"{key} · {name}: {booked:.1f} STP geboekt van {capacity:.1f} STP capaciteit",
+                [tag(text, tone), Small(f" {booked:.0f}/{capacity:.0f}")],
+            )
+        )
+    legend = [
+        tag(f"onder {low:.0%}: {LOAD_WORDS['active']}", "active"),
+        tag(f"{low:.0%}–{high:.0%}: {LOAD_WORDS['good']}", "good"),
+        tag(f"boven {high:.0%}: {LOAD_WORDS['critical']}", "critical"),
+    ]
+    return _hchart(legend, body, top, step, lambda v: f"{v:.0%}")
