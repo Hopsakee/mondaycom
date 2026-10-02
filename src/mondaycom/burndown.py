@@ -163,12 +163,29 @@ class Burndown:
         return self.ahead_by >= 0
 
     @property
-    def verdict(self) -> str:
+    def standing(self) -> tuple[str, float]:
+        """Where the sprint stands, as a kind and its points — the verdict before it is put
+        in words, so the CLI's English and the web's Dutch can never disagree on it.
+
+        `over` (sprint ended, nothing left), `over-left` (ended, points left), `on-track`,
+        `ahead` or `behind`, with the points it is about.
+        """
         if self.today > self.end:
-            return "sprint over" if self.remaining <= 0 else f"sprint over, {fmt(self.remaining)} left"
+            return ("over", 0.0) if self.remaining <= 0 else ("over-left", self.remaining)
         if abs(self.ahead_by) < 0.5:
-            return "on track"
-        return f"{fmt(abs(self.ahead_by))} points {'ahead' if self.on_track else 'behind'}"
+            return "on-track", 0.0
+        return ("ahead" if self.on_track else "behind"), abs(self.ahead_by)
+
+    @property
+    def verdict(self) -> str:
+        kind, points = self.standing
+        return {
+            "over": "sprint over",
+            "over-left": f"sprint over, {fmt(points)} left",
+            "on-track": "on track",
+            "ahead": f"{fmt(points)} points ahead",
+            "behind": f"{fmt(points)} points behind",
+        }[kind]
 
 
 def fmt(points: float) -> str:

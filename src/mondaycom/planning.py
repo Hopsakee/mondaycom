@@ -86,6 +86,39 @@ LAYER_HELP = {
     BACKLOG: "Epics in the Backlog group on the epic board, whatever their due date: what we could be doing next.",
 }
 
+#: The same three, in Dutch, for the web page — the huisstijl wants every word on screen
+#: in Dutch, the CLI keeps the English above. Change a rule, change both.
+LAYERS_NL = {
+    PROMISED: "Toegezegd",
+    LATER: "Later",
+    BACKLOG: "Backlog",
+}
+
+THIS_QUARTER_HELP_NL = (
+    "Alleen epics met een Due date op het epic-bord op of vóór het kwartaaleinde. "
+    "Epics zonder due date vallen af. Geldt voor elke aangevinkte laag."
+)
+
+LAYER_HELP_NL = {
+    PROMISED: "Epics in de groep Actief of Bespreken op het epic-bord, met een due date op of vóór het "
+    "kwartaaleinde of zonder due date: wat we dit kwartaal hebben toegezegd.",
+    LATER: "Epics in de groep Actief of Bespreken met een due date na het kwartaaleinde: "
+    "lopend, maar niet toegezegd voor dit kwartaal.",
+    BACKLOG: "Epics in de groep Backlog op het epic-bord, ongeacht hun due date: wat we hierna zouden kunnen doen.",
+}
+
+#: `Planned.verdict`'s words, in Dutch. Looked up with `[]`, so a verdict added without
+#: its Dutch fails loudly instead of showing English on the Dutch page.
+VERDICTS_NL = {
+    "no STP-TODO": "geen STP-TODO",
+    "no capacity": "geen capaciteit",
+    "late": "te laat",
+    "nothing left": "niets meer te doen",
+    "on time": "op tijd",
+    "this quarter": "dit kwartaal",
+    "after the quarter": "na het kwartaal",
+}
+
 #: A split within half a percent of 100 is 100: `33.3 + 33.3 + 33.4` is a valid split.
 SPLIT_TOLERANCE = 0.5
 
@@ -131,13 +164,19 @@ class Split:
         return sum(v or 0.0 for v in self.shares.values())
 
     @property
+    def problem_words(self) -> tuple[str, str]:
+        """Why this split cannot be used, in English (the CLI) and Dutch (the web) — one
+        decision, two languages; both empty when it can be used."""
+        if all(self.shares.get(d) is None for d in DISCIPLINES):
+            return "no split filled in", "geen verdeling ingevuld"
+        if abs(self.total - 100) > SPLIT_TOLERANCE:
+            return f"split adds up to {self.total:g}%", f"verdeling telt op tot {self.total:g}%"
+        return "", ""
+
+    @property
     def problem(self) -> str:
         """Why this split cannot be used, in a few words; empty when it can."""
-        if all(self.shares.get(d) is None for d in DISCIPLINES):
-            return "no split filled in"
-        if abs(self.total - 100) > SPLIT_TOLERANCE:
-            return f"split adds up to {self.total:g}%"
-        return ""
+        return self.problem_words[0]
 
     @property
     def is_valid(self) -> bool:
@@ -378,6 +417,11 @@ class Discipline:
         """What the discipline can do in `sprints` whole sprints."""
         return self.per_sprint * sprints
 
+    def full_capacity(self, sprints: int) -> float:
+        """What the discipline could do in `sprints` if everybody were 100% available — the
+        overhead still applies: the ceiling the availability percentages take a share of."""
+        return sum(p.capacity(100) for p in self.people) * sprints
+
     def load(self, sprints: int) -> float | None:
         """The selection's points as a fraction of what the window holds. Above 1 is
         overbooked; `None` is work with nobody to do it."""
@@ -437,6 +481,8 @@ class Problem:
     layer: str
     reason: str
     url: str
+    #: `reason`, in Dutch, for the web page.
+    reason_nl: str = ""
 
 
 @dataclass
@@ -564,9 +610,18 @@ def plan(
         if split is not None:
             queue.append(Planned(epic=epic, split=split, layer=layer))
         elif epic.id in bad:
-            problems.append(Problem(epic, layer, bad[epic.id].problem, bad[epic.id].url))
+            en, nl = bad[epic.id].problem_words
+            problems.append(Problem(epic, layer, en, bad[epic.id].url, nl))
         else:
-            problems.append(Problem(epic, layer, "not linked on Epics-STP-distribution", epic.url))
+            problems.append(
+                Problem(
+                    epic,
+                    layer,
+                    "not linked on Epics-STP-distribution",
+                    epic.url,
+                    "niet gekoppeld op Epics-STP-distribution",
+                )
+            )
     queue.sort(key=queue_key)
 
     disciplines = [Discipline(key, [p for p in snapshot.people if p.role == key]) for key in DISCIPLINES]
@@ -608,3 +663,65 @@ def most_overbooked(p: Plan) -> list[Discipline]:
         return -math.inf if load is None else -load
 
     return sorted(p.disciplines, key=key)
+
+
+def layers_text_nl(layers: tuple[str, ...]) -> str:
+    """`layers_text` in Dutch: "Toegezegd + Later"."""
+    return " + ".join(LAYERS_NL[key] for key in layers)
+
+
+#: A load's tone in words, for the web: the same band as `load_tone`.
+LOAD_WORDS = {"active": "ruimte over", "good": "op doel", "critical": "overboekt"}
+
+#: The load that counts as on target: between 90% and 110% of capacity. Below it there is
+#: room left, above it the discipline is overbooked. Every load colour follows this.
+LOAD_BAND = (0.9, 1.1)
+
+
+def load_tone(load: float | None) -> str:
+    """A load as a tone: `active` (blue) under the band, `good` inside it, `critical`
+    above it — and `critical` for work with nobody to do it."""
+    if load is None or load > LOAD_BAND[1]:
+        return "critical"
+    return "good" if load >= LOAD_BAND[0] else "active"
+
+
+def overflow(d: Discipline, sprints: int) -> float:
+    """The discipline's points that do not fit in the window's whole sprints."""
+    return max(d.total - d.capacity(sprints), 0.0)
+
+
+@dataclass(frozen=True)
+class Share:
+    """One epic's share for one discipline, and the sprints in which the discipline does it."""
+
+    planned: Planned
+    #: The epic's place in the whole queue, 1-based — the same number on every discipline.
+    position: int
+    points: float
+    #: Sprints counted from the window's start, 1-based. `None` when nobody does the work.
+    first: int | None
+    last: int | None
+
+
+def discipline_shares(queue: list[Planned], d: Discipline) -> list[Share]:
+    """The queue as one discipline works it: each epic's share, and its sprints.
+
+    The same walk `forecast` does, kept for one discipline: cumulative points before and
+    after the epic, divided by what the discipline does per sprint.
+    """
+    shares = []
+    cumulative = 0.0
+    per = d.per_sprint
+    for position, p in enumerate(queue, start=1):
+        points = p.split.share(d.key)
+        if not points:
+            continue
+        before, cumulative = cumulative, cumulative + points
+        if not per:
+            shares.append(Share(p, position, points, None, None))
+            continue
+        first = math.floor(before / per + 1e-9) + 1
+        last = max(first, math.ceil(cumulative / per - 1e-9))
+        shares.append(Share(p, position, points, first, last))
+    return shares

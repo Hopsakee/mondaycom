@@ -370,3 +370,39 @@ def test_this_quarter_keeps_only_epics_due_by_the_quarter_end() -> None:
     # The layers still decide on their own: unticked Backlog stays out.
     assert [q.epic.id for q in pl.plan(snapshot(epics, splits), WINDOW, this_quarter=True).queue] == ["due"]
     assert len(pl.plan(snapshot(epics, splits), WINDOW, every_layer).queue) == 4
+
+
+# --- the cards view's per-discipline figures -----------------------------------------------
+
+
+def test_full_capacity_is_everybody_at_100_percent_with_their_overhead_kept() -> None:
+    d = pl.Discipline("DS", people=[person("A", "DS", available=50, overhead=10), person("B", "DS", available=80)])
+    assert d.per_sprint == 10 * 0.5 * 0.9 + 10 * 0.8
+    assert d.full_capacity(4) == 4 * 19 and d.capacity(4) == 4 * 12.5
+
+
+def test_the_load_band_is_blue_under_green_on_and_red_over_target() -> None:
+    assert pl.load_tone(0.5) == "active" and pl.load_tone(0.89) == "active"
+    assert pl.load_tone(0.9) == "good" and pl.load_tone(1.1) == "good"
+    assert pl.load_tone(1.11) == "critical" and pl.load_tone(None) == "critical"
+
+
+def test_discipline_shares_follow_the_queue_into_the_sprints_they_land_in() -> None:
+    a = pl.Planned(epic=epic("a"), split=split("a", todo=15, shares={"DE": 100.0}), layer=pl.PROMISED)
+    b = pl.Planned(epic=epic("b"), split=split("b", todo=10, shares={"DE": 50.0, "DB": 50.0}), layer=pl.PROMISED)
+    c = pl.Planned(epic=epic("c"), split=split("c", todo=20, shares={"DE": 100.0}), layer=pl.PROMISED)
+    d = pl.Discipline("DE", people=[person("A", "DE")])
+    shares = pl.discipline_shares([a, b, c], d)
+    assert [(s.planned.epic.id, s.position, s.points, s.first, s.last) for s in shares] == [
+        ("a", 1, 15.0, 1, 2),
+        ("b", 2, 5.0, 2, 2),
+        ("c", 3, 20.0, 3, 4),
+    ]
+    nobody = pl.discipline_shares([a], pl.Discipline("DE"))
+    assert (nobody[0].first, nobody[0].last) == (None, None), "no capacity, no sprints"
+
+
+def test_the_left_out_reasons_have_dutch_words_for_the_web() -> None:
+    assert split("e", 10, dict.fromkeys(DEFAULT)).problem_words == ("no split filled in", "geen verdeling ingevuld")
+    assert split("e", 10, {"DE": 90}).problem_words[1] == "verdeling telt op tot 90%"
+    assert all(word in pl.VERDICTS_NL for word in ("no capacity", "late", "on time", "after the quarter"))

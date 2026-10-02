@@ -1,4 +1,4 @@
-"""FastHTML web interface: the Sprint page, the Epics page and the Portfolio page.
+"""FastHTML web interface: the Sprint, Epics, Portfolio and Planning pages.
 
 The Sprint page is one read of the board's sprint group, shown four ways: headline
 tiles, the burndown chart, a small burndown per person, and the task list with its
@@ -6,6 +6,10 @@ Obsidian markdown. The Epics page is every epic with its story points burnt down
 Portfolio page is the IV Portfolio board with those epics grouped under it, as an
 overview and a detail page per item. The library reference is mirrored under
 docs/fasthtml/ — start with its README.md.
+
+Every page wears the WDODelta huisstijl (`theme.py`) and speaks Dutch, and every page can
+be read as a table or as cards (`cards.py`): the switch in the page head sets the
+`weergave` cookie, which `WeergaveMiddleware` reads once per request for `as_cards()`.
 
 Fetched rows are cached in module-level state (`_TASKS`, `_EPICS`, …) so that ticking a
 checkbox or clicking a header re-renders locally instead of spending complexity budget
@@ -18,12 +22,14 @@ import os
 import threading
 from collections.abc import Callable
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from fasthtml import live_reload
 from fasthtml.common import (
+    H1,
     H2,
     H3,
     H4,
@@ -36,14 +42,18 @@ from fasthtml.common import (
     Div,
     Fieldset,
     Form,
+    Header,
     Input,
     Label,
     Legend,
     Li,
+    Main,
     Nav,
+    NotStr,
     Option,
     P,
     Pre,
+    Script,
     Select,
     Small,
     Span,
@@ -55,16 +65,19 @@ from fasthtml.common import (
     Td,
     Th,
     Thead,
-    Titled,
+    Title,
     Tr,
     Ul,
     fast_app,
 )
 from fasthtml.pico import Group  # Pico-only layout helpers are not re-exported by `common`
+from starlette.middleware import Middleware
+from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
 from mondaycom import burndown as bd
-from mondaycom import chart, epics, lookups, planning, portfolio, sprint
+from mondaycom import cards, chart, epics, lookups, planning, portfolio, sprint, theme
+from mondaycom.cards import KAARTEN, TABEL
 from mondaycom.client import MondayClient, MondayError
 from mondaycom.config import ASSIGNED_TO_ME, DAM, DONE_STATUS, ME, NON_DAM, OPEN_STATUSES
 from mondaycom.epics import Epic
@@ -106,7 +119,10 @@ ALL_EPICS = "all"
 
 # "Do not filter on the portfolio at all", alongside config.DAM / config.NON_DAM.
 ANY_PORTFOLIO = ""
-PORTFOLIO_LABELS = ((ANY_PORTFOLIO, "Both"), (DAM, "DAM only"), (NON_DAM, "Non-DAM only"))
+PORTFOLIO_LABELS = ((ANY_PORTFOLIO, "Beide"), (DAM, "Alleen DAM"), (NON_DAM, "Alleen niet-DAM"))
+
+#: The app's name in the brand bar and the browser tab.
+APP_NAME = "Datalab sprintbord"
 
 FETCH_ERRORS = (MondayError, ValueError, RuntimeError, OSError)
 
@@ -176,7 +192,7 @@ def person_name(person: str) -> str:
         return ME
     match = next((c.name for c in people_choices() if c.id == person), "")
     if not match:
-        raise ValueError(f"Unknown person {person!r}. Pick one from the dropdown.")
+        raise ValueError(f"Onbekende persoon {person!r}. Kies iemand uit de lijst.")
     return match
 
 
@@ -195,18 +211,15 @@ CSS = """
 #markdown { white-space: pre-wrap; }
 td.tight, th.tight { width: 1%; white-space: nowrap; }
 .htmx-request #spinner { display: inline; }
-#spinner { display: none; }
-/* The nav says where you are: the current page is ink, not a link colour. */
-nav.pages ul:first-child { margin-left: -.5rem; }
-nav.pages a[aria-current="page"] { color: var(--pico-h1-color, inherit); font-weight: 600; text-decoration: none; }
-nav.pages a { padding: .25rem .5rem; }
-p.lede { margin-top: -.5rem; color: var(--pico-muted-color); }
+#spinner { display: none; color: var(--muted); }
 /* One tight actions row rather than a full-width primary button. */
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .6rem; }
 .actions button, .actions [role="button"] { width: auto; margin-bottom: 0; }
-.section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1.25rem; margin-top: 1.75rem; }
-.section-head h3 { margin-bottom: .2rem; }
-.section-head small { color: var(--pico-muted-color); }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1.25rem; margin: 2rem 0 .6rem; }
+.section-head h3 { margin-bottom: 0; font-size: 1.2rem; }
+.section-head small { color: var(--muted); }
+#sprint > h2, #planning > h2, #portfolio-item > h2 { margin-top: .4rem; }
+.lede-scope { color: var(--muted); margin-top: -.2rem; }
 table td { vertical-align: middle; }
 /* A finished task is shown as finished. The checkbox means "copy this one". */
 tr.done td { opacity: .62; }
@@ -225,7 +238,7 @@ caption.hint { caption-side: top; text-align: left; padding-bottom: .4rem; }
 th button.sort {
   all: unset; cursor: pointer; font: inherit; font-weight: 600; white-space: nowrap;
 }
-th button.sort:focus-visible { outline: 2px solid var(--pico-primary-focus, #0172ad); outline-offset: 2px; }
+th button.sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 th button.sort .arrow { opacity: .45; font-size: .8em; }
 th button.sort[aria-sort] .arrow { opacity: 1; }
 
@@ -235,8 +248,22 @@ th button.sort[aria-sort] .arrow { opacity: 1; }
            align-items: end; }
 .filters label:first-child { grid-column: span 2; }
 .filters label.switch { padding-bottom: .9rem; }
-#epic-filters { margin-bottom: 1.2rem; border: 0; padding: 0; }
 #epic-filters input, #epic-filters select { margin-bottom: .2rem; }
+/* A date field: the ISO text and a calendar button in one control. The native picker is
+   kept, invisible, under the button — only for the calendar it opens. */
+.date-field { position: relative; display: flex; gap: .35rem; align-items: stretch;
+              margin-bottom: var(--pico-spacing); }  /* the margin Pico gives every other input */
+.date-field input[type=text] { flex: 1; margin-bottom: 0; font-variant-numeric: tabular-nums; }
+.date-field input.date-picker { position: absolute; right: 0; bottom: 0; width: 1px; height: 1px; padding: 0;
+                                margin: 0; border: 0; opacity: 0; pointer-events: none; }
+.date-field button.date-button { width: auto; margin: 0; padding: 0 .65rem; background: var(--surface);
+                                 border: 1px solid var(--line); color: var(--ink); }
+.date-field button.date-button:hover { border-color: var(--accent); }
+.markdown-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+                 margin: 1.5rem 0 .4rem; }
+.markdown-head h3 { margin: 0; font-size: 1.1rem; }
+.markdown-head button { width: auto; margin: 0; }
+#markdown-block pre { border: 1px solid var(--line); box-shadow: var(--shadow); }
 
 table.epics td, table.epics th { padding: .3rem .45rem; font-size: .88rem; }
 table.epics { min-width: 62rem; }
@@ -262,11 +289,12 @@ table.portfolio td.goal, table.portfolio th.goal { max-width: 8rem; white-space:
 table.portfolio td.lead { white-space: normal; min-width: 6rem; max-width: 8rem; overflow-wrap: normal; }
 
 /* One portfolio item's own fields: labelled facts, not a second table. */
-.meta { display: flex; flex-wrap: wrap; gap: .35rem 1.5rem; margin: -.4rem 0 1rem; }
+.meta { display: flex; flex-wrap: wrap; gap: .5rem 1.75rem; margin: -.2rem 0 1rem; }
 .meta .fact small { display: block; color: var(--text-muted); font-size: .75rem; line-height: 1.3; }
 .meta .fact span { font-size: .9rem; }
 
 /* The planning page: the window row, and the tables. The epic queue is the longest. */
+.back { margin: -.4rem 0 .8rem; font-size: .9rem; }
 #planning-filters .filters { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
 #planning-filters .filters label:first-child { grid-column: auto; }
 #planning-filters fieldset.layers { display: flex; flex-wrap: wrap; gap: .2rem 1rem; align-items: center;
@@ -300,7 +328,7 @@ htmx.trigger(this.closest('form'), 'change');
 COPY_JS = """
 navigator.clipboard.writeText(document.getElementById('markdown').innerText).then(() => {
     const label = this.textContent;
-    this.textContent = 'Copied';
+    this.textContent = 'Gekopieerd';
     setTimeout(() => { this.textContent = label; }, 1500);
 });
 """
@@ -311,6 +339,20 @@ CHIP_JS = """
 const f = this.closest('form');
 f.elements.namedItem('status').value = this.dataset.status;
 htmx.trigger(f, 'change');
+"""
+
+# `this` is one half of the view switch. The cookie is what the routes read; the page's
+# own filter form then re-asks for its section, so the switch costs a re-render from the
+# cache rather than a reload. A page without such a form (one portfolio item) reloads.
+WEERGAVE_JS = """
+function setWeergave(btn) {
+  const v = btn.dataset.weergave;
+  document.cookie = 'weergave=' + v + '; path=/; max-age=31536000; samesite=lax';
+  btn.parentElement.querySelectorAll('button')
+    .forEach(b => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+  const f = document.querySelector('form[data-refilter]');
+  if (f) htmx.trigger(f, 'change'); else location.reload();
+}
 """
 
 # Live reload: `fast_app(live=True)` injects a socket that refreshes the browser when
@@ -339,29 +381,107 @@ async def live_reload_ws(websocket: Any) -> None:
 
 live_reload.live_reload_ws = live_reload_ws
 
+#: The view this request asked for — see `WeergaveMiddleware`.
+_WEERGAVE: ContextVar[str] = ContextVar("weergave", default=TABEL)
+
+
+class WeergaveMiddleware:
+    """Reads the `weergave` cookie once per request, so no route or helper has to carry it.
+
+    A plain ASGI middleware rather than Beforeware: it runs in the request's own context,
+    which the thread a sync handler runs in inherits — a value set in Beforeware does not
+    reach it. Anything but `kaarten` is the table.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            _WEERGAVE.set(KAARTEN if HTTPConnection(scope).cookies.get("weergave") == KAARTEN else TABEL)
+        await self.app(scope, receive, send)
+
+
+def as_cards() -> bool:
+    """Whether this request shows cards rather than tables."""
+    return _WEERGAVE.get() == KAARTEN
+
+
 app, rt = fast_app(
-    title="monday sprint", live=LIVE, hdrs=(Style(CSS), Style(chart.CHART_CSS)), on_shutdown=[close_client]
+    title=APP_NAME,
+    live=LIVE,
+    hdrs=(
+        theme.theme_script(),
+        Script(WEERGAVE_JS),
+        Style(theme.THEME_CSS),
+        Style(chart.CHART_CSS),
+        Style(cards.CARDS_CSS),
+        Style(CSS),
+    ),
+    # Light is the huisstijl default; the brand bar's switch makes it dark.
+    htmlkw={"lang": "nl", "data-theme": "light"},
+    middleware=[Middleware(WeergaveMiddleware)],
+    on_shutdown=[close_client],
 )
 
 
-def page(title: str, *content: Any) -> Any:
-    """Every page: the same nav, with the current page marked, then the route's content."""
-    links = (("Sprint", index), ("Epics", epics_page), ("Portfolio", portfolio_page), ("Planning", planning_page))
-    return Titled(
-        title,
-        Nav(
-            Ul(
-                *[Li(A(label, href=target, aria_current="page" if label == title else None)) for label, target in links]
-            ),
-            cls="pages",
-        ),
-        *content,
+#: The two halves of the view switch: value, label, a small icon in the label's colour.
+WEERGAVEN = (
+    (TABEL, "Tabel", "M2 3h12v2H2zm0 4h12v2H2zm0 4h12v2H2z"),
+    (KAARTEN, "Kaarten", "M2 2h5v5H2zm7 0h5v5H9zM2 9h5v5H2zm7 0h5v5H9z"),
+)
+
+
+def view_switch() -> Any:
+    """Table or cards. Every page carries it, and it remembers the choice for all of them."""
+    weergave = _WEERGAVE.get()
+    return Div(
+        *[
+            Button(
+                NotStr(f'<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="{icon}"/></svg>'),
+                label,
+                type="button",
+                data_weergave=value,
+                aria_pressed="true" if value == weergave else "false",
+                onclick="setWeergave(this)",
+            )
+            for value, label, icon in WEERGAVEN
+        ],
+        cls="seg",
+        role="group",
+        aria_label="Weergave",
+        title="Bekijk deze pagina als tabel of als kaarten",
     )
 
 
-def lede(text: str) -> Any:
-    """The one-line explanation under a page title."""
-    return P(Small(text), cls="lede")
+def page(title: str, about: str, *content: Any) -> Any:
+    """Every page: the brand bar, the title with its lede and the view switch, the tabs
+    with the current page marked, the route's content, and the footer."""
+    links = (("Sprint", index), ("Epics", epics_page), ("Portfolio", portfolio_page), ("Planning", planning_page))
+    return (
+        Title(f"{title} · {APP_NAME}"),
+        theme.brandbar(APP_NAME),
+        Main(
+            Header(
+                Div(H1(title), P(about, cls="lede")),
+                view_switch(),
+                cls="page-head",
+            ),
+            Nav(
+                Ul(
+                    *[
+                        Li(A(label, href=target, aria_current="page" if label == title else None))
+                        for label, target in links
+                    ]
+                ),
+                cls="tabs",
+                aria_label="Pagina's",
+            ),
+            *content,
+            cls="container page",
+        ),
+        theme.site_footer(),
+    )
 
 
 def error(exc: Exception, id: str) -> Any:
@@ -380,7 +500,7 @@ def epic_select(choices: list[Choice], selected: str = ALL_EPICS) -> Any:
     if selected != ALL_EPICS and selected not in {c.id for c in choices}:
         selected = ALL_EPICS  # the epic left the current scope; do not filter on nothing
     return Select(
-        Option("All epics", value=ALL_EPICS, selected=selected == ALL_EPICS),
+        Option("Alle epics", value=ALL_EPICS, selected=selected == ALL_EPICS),
         *[Option(c.name, value=c.id, selected=c.id == selected) for c in choices],
         name="epic",
         id="epic-select",
@@ -390,8 +510,8 @@ def epic_select(choices: list[Choice], selected: str = ALL_EPICS) -> Any:
 def person_select(selected: str = ASSIGNED_TO_ME) -> Any:
     """The assignee dropdown. "Assigned to" means the Trekker; reviewing does not count."""
     return Select(
-        Option("Me", value=ASSIGNED_TO_ME, selected=selected == ASSIGNED_TO_ME),
-        Option("Everyone", value=EVERYONE, selected=selected == EVERYONE),
+        Option("Ik", value=ASSIGNED_TO_ME, selected=selected == ASSIGNED_TO_ME),
+        Option("Iedereen", value=EVERYONE, selected=selected == EVERYONE),
         *[Option(c.name, value=c.id, selected=c.id == selected) for c in people_choices()],
         name="person",
     )
@@ -422,10 +542,10 @@ def blocker_links(epic: Epic) -> list[Any]:
 def stuck_reason(epic: Epic) -> str:
     """Why this epic is stuck, in the few words a table cell has room for."""
     tasks = len(epic.impediments)
-    plural = "" if tasks == 1 else "s"
+    word = "taak" if tasks == 1 else "taken"
     if epic.is_blocked and tasks:
-        return f"epic + {tasks} task{plural}"
-    return "epic" if epic.is_blocked else f"{tasks} task{plural}"
+        return f"epic + {tasks} {word}"
+    return "epic" if epic.is_blocked else f"{tasks} {word}"
 
 
 def stuck_cell(epic: Epic) -> Any:
@@ -436,7 +556,7 @@ def stuck_cell(epic: Epic) -> Any:
     """
     if not epic.is_stuck:
         return ""
-    on_monday = "Status epic: Impediment" if epic.is_blocked else "the epic on monday.com"
+    on_monday = "Status epic: Impediment" if epic.is_blocked else "de epic op monday.com"
     return Details(
         Summary(chart.stuck_tag(stuck_reason(epic))),
         Ul(
@@ -454,7 +574,7 @@ def portfolio_stuck_cell(item: PortfolioItem) -> Any:
         return ""
     blocked = item.stuck_epics
     return Details(
-        Summary(chart.stuck_tag(f"{len(blocked)} epic{'' if len(blocked) == 1 else 's'}")),
+        Summary(chart.stuck_tag(f"{epics_word(len(blocked))} vast")),
         Ul(
             *[
                 Li(
@@ -477,16 +597,53 @@ def portfolio_stuck_cell(item: PortfolioItem) -> Any:
 # list alone, because a burndown without its done tasks is not a burndown.
 
 
+#: `this` is a date field's hidden native picker: write the picked date into the text
+#: field as ISO. Its own `change` then bubbles to the form, which asks for the section.
+DATE_PICKED_JS = "this.parentElement.querySelector('input[type=text]').value = this.value"
+
+
+def date_field(name: str, value: str, id: str | None = None) -> Any:
+    """A date as the page writes it everywhere, `2026-12-31`, with a calendar button.
+
+    Not a bare `<input type="date">`: that one *shows* its value in the browser's locale
+    (09/28/2026 on an English browser) whatever the page asks for. The text field is what
+    is submitted and must read `JJJJ-MM-DD` (the browser blocks the request otherwise);
+    the native picker sits hidden behind the button only for its calendar.
+    """
+    return Span(
+        Input(
+            type="text",
+            name=name,
+            value=value,
+            inputmode="numeric",
+            pattern=r"\d{4}-\d{2}-\d{2}",
+            placeholder="JJJJ-MM-DD",
+            title="Een datum als JJJJ-MM-DD, bijvoorbeeld 2026-12-31",
+            autocomplete="off",
+        ),
+        Input(type="date", value=value, tabindex="-1", aria_hidden="true", cls="date-picker", onchange=DATE_PICKED_JS),
+        Button(
+            "📅",
+            type="button",
+            cls="date-button",
+            aria_label="Kies een datum in de kalender",
+            onclick="this.parentElement.querySelector('.date-picker').showPicker()",
+        ),
+        cls="date-field",
+        id=id,
+    )
+
+
 def sprint_end_field(end: str) -> Any:
-    """The date picker. It shows the window actually in use, not a blank."""
-    return Input(type="date", name="end", value=end, id="sprint-end")
+    """The sprint's end date. It shows the window actually in use, not a blank."""
+    return date_field("end", end, id="sprint-end")
 
 
 def refresh_button(route: Any, form: str, target: str) -> Any:
     """Re-read the page's boards: `route` with `refresh` on it, sent with the `form`'s
     filters so the fresh read comes back in the same slice, swapped over `target`."""
     return Button(
-        "Refresh from monday.com",
+        "Opnieuw ophalen van monday.com",
         type="button",
         cls="secondary outline",
         hx_get=route,
@@ -502,8 +659,8 @@ def sprint_controls(end: str, person: str, choices: list[Choice], epic: str, dam
     return Form(
         Fieldset(
             Group(
-                Label("Sprint end", sprint_end_field(end)),
-                Label("Assigned to", person_select(person)),
+                Label("Einde sprint", sprint_end_field(end)),
+                Label("Toegewezen aan", person_select(person)),
             ),
             Group(
                 Label("Epic", epic_select(choices, epic)),
@@ -511,13 +668,13 @@ def sprint_controls(end: str, person: str, choices: list[Choice], epic: str, dam
             ),
             Label(
                 Input(type="checkbox", name="open_only", role="switch", checked=open_only),
-                "Open only (drop Done tasks from the list)",
+                "Alleen open taken (Done valt uit de lijst)",
             ),
         ),
         Div(
-            Button("Update", type="submit"),
+            Button("Bijwerken", type="submit"),
             refresh_button(sprint_view.to(refresh=1), "#sprint-filters", "#sprint"),
-            Small(" loading…", id="spinner"),
+            Small(" laden…", id="spinner"),
             cls="actions",
         ),
         hx_get=sprint_view,
@@ -526,6 +683,8 @@ def sprint_controls(end: str, person: str, choices: list[Choice], epic: str, dam
         hx_trigger="change, submit",
         hx_indicator="closest form",
         id="sprint-filters",
+        cls="panel",
+        data_refilter="1",
     )
 
 
@@ -543,12 +702,12 @@ def task_row(task: Task) -> Any:
                 name="task_id",
                 value=task.id,
                 checked=True,
-                aria_label=f"Include {task.name} in the markdown",
+                aria_label=f"Neem {task.name} op in de markdown",
             ),
             cls="tight",
         ),
         Td(Del(task.name) if done else task.name),
-        Td(Span("🤝", title="Review work") if task.is_reviewer else "", cls="tight"),
+        Td(Span("🤝", title="Reviewwerk") if task.is_reviewer else "", cls="tight"),
         Td(chart.people(task.owner, photo_for), cls="tight"),
         Td(task.epic),
         Td(chart.status_tag(task.status), cls="tight"),
@@ -562,38 +721,119 @@ def task_table(items: list[Task], end: str) -> Any:
     """The task picker. Any change re-renders the markdown from the cache."""
     header = Tr(
         Th(
-            Input(type="checkbox", checked=True, onclick=TOGGLE_ALL_JS, aria_label="Select all tasks"),
+            Input(type="checkbox", checked=True, onclick=TOGGLE_ALL_JS, aria_label="Selecteer alle taken"),
             cls="tight",
         ),
-        Th("Task"),
-        Th(Span("🤝", title="Review work"), cls="tight", aria_label="Review"),
-        Th("Owner", cls="tight"),
+        Th("Taak"),
+        Th(Span("🤝", title="Reviewwerk"), cls="tight", aria_label="Review"),
+        Th("Trekker", cls="tight"),
         Th("Epic"),
         Th("Status", cls="tight"),
-        Th("Time", cls="tight"),
+        Th("Tijd", cls="tight"),
         Th("Due", cls="tight"),
     )
-    return Form(
-        Input(type="hidden", name="end", value=end),
+    return task_form(
+        end,
         Div(
             Table(
-                Caption("Tick the tasks to copy. Struck-through tasks are already Done.", cls="hint"),
+                Caption("Vink de taken aan die je wilt kopiëren. Doorgestreept is al Done.", cls="hint"),
                 Thead(header),
                 Tbody(*[task_row(task) for task in items]),
                 cls="tasks",
             ),
             cls="table-wrap",
         ),
+    )
+
+
+def task_form(end: str, *content: Any) -> Any:
+    """The selection form both task views sit in: any tick re-renders the markdown."""
+    return Form(
+        Input(type="hidden", name="end", value=end),
+        *content,
         hx_get=markdown,
         hx_target="#markdown-block",
         hx_trigger="change",
     )
 
 
+#: The sprint board's lanes, by the tone of a task's status: the same grouping the
+#: status tags already wear, so a lane and the dot on its cards always agree.
+LANES = (
+    ("neutral", "Te doen"),
+    ("active", "Bezig"),
+    ("warning", "Wacht"),
+    ("critical", "Geblokkeerd"),
+    ("good", "Klaar"),
+    ("off", "Vervallen"),
+)
+
+
+def task_card(task: Task) -> Any:
+    """One task as a card on the sprint board. The card is its checkbox's label, so a click
+    anywhere on it takes the task in or out of the markdown; an unticked card fades."""
+    done = task.status == DONE_STATUS
+    tone = chart.STATUS_TONES.get(task.status, "neutral")
+    return Label(
+        Input(
+            type="checkbox",
+            name="task_id",
+            value=task.id,
+            checked=True,
+            aria_label=f"Neem {task.name} op in de markdown",
+        ),
+        Span(task.name, cls="t"),
+        Div(
+            chart.people(task.owner, photo_for) if task.owner else None,
+            Span("🤝", title="Reviewwerk") if task.is_reviewer else None,
+            cards.pill(f"{bd.fmt(task.story_points)} STP") if task.story_points else None,
+            Span(f"📅 {task.due_date}") if task.due_date else None,
+            Span(task.epic, title="Epic") if task.epic else None,
+            cls="m",
+        ),
+        cls=f"taak tone-{tone} done" if done else f"taak tone-{tone}",
+        title=task.status,
+    )
+
+
+def task_board(items: list[Task], end: str) -> Any:
+    """The task picker as a board: one lane per state, a card per task."""
+    lanes = []
+    for tone, label in LANES:
+        mine = [task for task in items if chart.STATUS_TONES.get(task.status, "neutral") == tone]
+        if not mine:
+            continue
+        points = sum(task.story_points for task in mine)
+        lanes.append(
+            Div(
+                Header(chart.tag(label, tone), Small(f"{len(mine)} · {bd.fmt(points)} STP")),
+                *[task_card(task) for task in mine],
+                cls="lane",
+                aria_label=label,
+            )
+        )
+    return task_form(
+        end,
+        Div(
+            Label(
+                Input(type="checkbox", checked=True, onclick=TOGGLE_ALL_JS, aria_label="Selecteer alle taken"),
+                "Alles selecteren",
+            ),
+            Span("Klik op een kaart om hem in of uit de markdown te halen."),
+            cls="kanban-tools",
+        ),
+        Div(*lanes, cls="kanban"),
+    )
+
+
 def markdown_block(text: str) -> Any:
     """The Obsidian markdown, plus a button that puts it on the clipboard."""
     return Div(
-        Button("Copy", onclick=COPY_JS, cls="secondary"),
+        Div(
+            H3("Markdown voor Obsidian"),
+            Button("Kopiëren", onclick=COPY_JS, cls="secondary outline"),
+            cls="markdown-head",
+        ),
         Pre(Code(text, id="markdown")),
         id="markdown-block",
     )
@@ -605,8 +845,8 @@ def task_summary(items: list[Task], own_points: int | None = None) -> Any:
     one whenever review work is in the list."""
     minutes = sum(task.duration_minutes for task in items)
     points = sum(task.story_points for task in items)
-    tail = f" · {own_points} as Trekker" if own_points is not None and own_points != points else ""
-    return Small(f"{len(items)} tasks · {points} points{tail} · {minutes} minutes")
+    tail = f" · {own_points} als Trekker" if own_points is not None and own_points != points else ""
+    return Small(f"{len(items)} taken · {points} punten{tail} · {minutes} minuten")
 
 
 def sprint_scope(person: str, dam: str, epic: str, kept: int, total: int) -> str:
@@ -619,12 +859,12 @@ def sprint_scope(person: str, dam: str, epic: str, kept: int, total: int) -> str
     """
     if kept == total and not person and not dam and not epic:
         return ""
-    parts = [person or "everyone"]
+    parts = [person or "iedereen"]
     parts += [dam_label(dam).lower()] if dam_label(dam) else []
     if epic:
         parts.append(epic)
-    line = f"{' · '.join(parts)} — {kept} of {total} tasks in the sprint group"
-    return f"{line} · points counted as Trekker only" if person else line
+    line = f"{' · '.join(parts)} — {kept} van {total} taken in de sprintgroep"
+    return f"{line} · punten tellen alleen voor de Trekker" if person else line
 
 
 def per_person(items: list[bd.SprintItem], end: str, window_from: list[bd.SprintItem]) -> list[Any]:
@@ -635,37 +875,42 @@ def per_person(items: list[bd.SprintItem], end: str, window_from: list[bd.Sprint
     points, so they are the Trekker's alone (`bd.owned`) — review work would count the
     same points twice and no card would add up.
     """
-    cards = [chart.multiple(Strong("Everyone"), bd.build(items, end=end or None, window_from=window_from))]
+    shown = [chart.multiple(Strong("Iedereen"), bd.build(items, end=end or None, window_from=window_from))]
     for name in bd.people(items):
         mine = bd.owned(items, name)
-        cards.append(
+        shown.append(
             chart.multiple(
                 chart.person(name, photo_for(name)), bd.build(mine, end=end or None, window_from=window_from)
             )
         )
-    return cards
+    return shown
 
 
 def sprint_section(
-    b: bd.Burndown, scope: str, multiples: list[Any], tasks: list[Task], own_points: int | None = None
+    b: bd.Burndown,
+    scope: str,
+    multiples: list[Any],
+    tasks: list[Task],
+    own_points: int | None = None,
 ) -> Any:
-    """Everything under the filters: tiles, chart, per-person charts, tasks, markdown."""
+    """Everything under the filters: tiles, chart, per-person charts, tasks, markdown.
+    The cards view swaps the task table for a board; everything above it is the same."""
     end = str(b.end)
+    picker = task_board if as_cards() else task_table
     return Div(
         H2(f"Sprint {b.start} – {b.end}"),
-        P(Small(scope), cls="lede") if scope else None,
+        P(Small(scope), cls="lede-scope") if scope else None,
         chart.kpis(b),
-        chart.legend(),
-        chart.burndown_svg(b),
-        Details(Summary("Day by day"), chart.burndown_table(b)),
+        Div(chart.legend(), chart.burndown_svg(b), cls="panel chart-panel"),
+        Details(Summary("Dag voor dag"), chart.burndown_table(b)),
         Div(
-            H3("Per person"),
-            Small("every Trekker in this slice · each chart to its own scale, on the sprint's window"),
+            H3("Per persoon"),
+            Small("elke Trekker in deze selectie · elke grafiek op eigen schaal, binnen de sprint"),
             cls="section-head",
         ),
         Div(*multiples, cls="multiples"),
-        Div(H3("Tasks"), task_summary(tasks, own_points), cls="section-head"),
-        task_table(tasks, end) if tasks else P("No tasks in this slice."),
+        Div(H3("Taken"), task_summary(tasks, own_points), cls="section-head"),
+        picker(tasks, end) if tasks else P("Geen taken in deze selectie."),
         markdown_block(sprint.tasklist_markdown(tasks, end)),
         cls="viz",
         id="sprint",
@@ -740,7 +985,7 @@ def index(
     result = _sprint(end, person, epic, dam, open_only, refresh=True)
     return page(
         "Sprint",
-        lede("The current sprint group: points burnt down, who stands where, and the tasks as Obsidian checkboxes."),
+        "De huidige sprintgroep: punten afgebrand, wie waar staat, en de taken als Obsidian-checkboxes.",
         sprint_controls(result.end, person, result.choices, epic, dam, open_only),
         result.view,
     )
@@ -784,15 +1029,15 @@ def markdown(end: str = "", task_id: list[str] | None = None) -> Any:
 
 #: Column key, heading, header class. The order here is the order of the table.
 EPIC_COLUMNS = (
-    ("name", "Item", None),
+    ("name", "Epic", None),
     ("status", "Status epic", "tight"),
-    ("stuck", "Stuck", "tight"),
+    ("stuck", "Vast", "tight"),
     ("owner", "Trekker", "tight"),
     ("portfolio", "Portfolio", "portfolio"),
-    ("priority", "Priority", "tight"),
-    ("done", "STP done", "tight"),
-    ("remaining", "STP left", "tight"),
-    ("progress", "Progress", "tight"),
+    ("priority", "Prioriteit", "tight"),
+    ("done", "STP klaar", "tight"),
+    ("remaining", "STP te gaan", "tight"),
+    ("progress", "Voortgang", "tight"),
 )
 
 
@@ -830,6 +1075,8 @@ class TableView:
     #: (rows, filters, sort=, desc=) -> the rows shown, in order.
     arrange: Callable[..., list[Any]]
     row: Callable[[Any], Any]
+    #: The same row as a card, for the cards view.
+    card: Callable[[Any], Any]
     #: (shown, every row, the extra from `load`) -> the tiles above the table.
     summary: Callable[[list[Any], list[Any], Any], Any]
     #: (rows, filters) -> the filter controls, swapped in once with the first table.
@@ -842,35 +1089,53 @@ class TableView:
     caption: str | None = None
     #: (rows, filters) -> controls above the fields that come back with *every* response.
     chips: Callable[[list[Any], Any], Any] | None = None
+    #: Wider cards, for rows that carry a list of their own (a portfolio item's epics).
+    wide_cards: bool = False
 
 
-def sort_header(view: TableView, column: str, heading: str, cls: str | None, spec: str) -> Any:
-    """One sortable heading: a submit-free button that asks for the next sort state.
+def sort_button(view: TableView, column: str, heading: str, spec: str) -> Any:
+    """One sort control: a submit-free button that asks for the next sort state.
 
     The direction lives in the URL and the filters ride along from the form, so the
-    header needs no state of its own — see `sorting.Sorting.next`.
+    button needs no state of its own — see `sorting.Sorting.next`. A table heading and
+    the cards view's sort row are the same button.
     """
     current, desc = view.sorting.parse(spec)
     active = column == current
-    return Th(
-        Button(
-            heading,
-            Span(" ↓" if (active and desc) else " ↑" if active else " ↕", cls="arrow"),
-            cls="sort",
-            type="button",
-            aria_sort=("descending" if desc else "ascending") if active else None,
-            hx_get=view.rows_route.to(resort=view.sorting.next(column, spec)),
-            hx_include=f"#{view.at}-filters",
-            hx_target=f"#{view.at}-table",
-            hx_swap="outerHTML",
-            hx_indicator=f"#{view.at}-filters",
+    return Button(
+        heading,
+        Span(" ↓" if (active and desc) else " ↑" if active else " ↕", cls="arrow"),
+        cls="sort",
+        type="button",
+        aria_sort=("descending" if desc else "ascending") if active else None,
+        hx_get=view.rows_route.to(resort=view.sorting.next(column, spec)),
+        hx_include=f"#{view.at}-filters",
+        hx_target=f"#{view.at}-table",
+        hx_swap="outerHTML",
+        hx_indicator=f"#{view.at}-filters",
+    )
+
+
+def sort_header(view: TableView, column: str, heading: str, cls: str | None, spec: str) -> Any:
+    """One sortable table heading."""
+    return Th(sort_button(view, column, heading, spec), cls=cls)
+
+
+def view_cards(view: TableView, shown: list[Any], spec: str) -> Any:
+    """The cards view of the same rows, in the same order, with the headings as a sort row."""
+    return Div(
+        Div(
+            Small("Sorteer op"),
+            *[sort_button(view, key, heading, spec) for key, heading, _ in view.columns],
+            cls="sortbar",
+            aria_label="Sorteren",
         ),
-        cls=cls,
+        cards.grid((view.card(row) for row in shown), size="wide" if view.wide_cards else ""),
     )
 
 
 def view_table(view: TableView, shown: list[Any], everything: list[Any], extra: Any, spec: str) -> Any:
-    """The table, header included: the one thing a sort or a filter swaps.
+    """The table (or the cards), header included: the one thing a sort or a filter swaps.
 
     Every response carries this `#<at>-table` wrapper, so everything that targets it
     swaps `outerHTML` — an innerHTML swap would nest a second wrapper inside the first.
@@ -879,6 +1144,8 @@ def view_table(view: TableView, shown: list[Any], everything: list[Any], extra: 
         body: Any = P(view.board_empty)
     elif not shown:
         body = P(view.none_match)
+    elif as_cards():
+        body = view_cards(view, shown, spec)
     else:
         body = Div(
             Table(
@@ -914,10 +1181,10 @@ def view_filters(view: TableView, f: Any, spec: str) -> Any:
         filter_fields(view, [], f),
         sort_field(view, spec),
         Div(
-            Button("Apply", type="submit"),
-            A("Clear", href=view.page_route, role="button", cls="secondary outline"),
+            Button("Toepassen", type="submit"),
+            A("Wissen", href=view.page_route, role="button", cls="secondary outline"),
             refresh_button(view.rows_route.to(refresh=1, fields=1), f"#{view.at}-filters", f"#{view.at}-table"),
-            Small(" loading…", id="spinner"),
+            Small(" laden…", id="spinner"),
             cls="actions",
         ),
         hx_get=view.rows_route,
@@ -926,6 +1193,8 @@ def view_filters(view: TableView, f: Any, spec: str) -> Any:
         hx_trigger="change, search, submit, input changed delay:400ms from:input[name=search]",
         hx_indicator="closest form",
         id=f"{view.at}-filters",
+        cls="panel",
+        data_refilter="1",
     )
 
 
@@ -939,7 +1208,7 @@ def view_page(view: TableView, f: Any, sort: str) -> Any:
     """
     return page(
         view.title,
-        lede(view.about),
+        view.about,
         view_filters(view, f, sort),
         Div(
             P(Small(view.loading), aria_busy="true"),
@@ -982,7 +1251,7 @@ def view_rows(view: TableView, f: Any, sort: str, resort: str, refresh: int, fie
 def search_field(placeholder: str, aria_label: str, value: str) -> Any:
     """The title search both overviews open their fields with."""
     return Label(
-        "Item",
+        "Zoeken",
         Input(type="search", name="search", value=value, placeholder=placeholder, aria_label=aria_label),
     )
 
@@ -990,13 +1259,22 @@ def search_field(placeholder: str, aria_label: str, value: str) -> Any:
 def progress_field(bucket: str) -> Any:
     """The battery column's filter: a bucket, not a number."""
     return Label(
-        "Progress",
+        "Voortgang",
         Select(
-            Option("Any progress", value="", selected=not bucket),
-            *[Option(label, value=value, selected=value == bucket) for value, label in epics.BUCKETS.items()],
+            Option("Elke voortgang", value="", selected=not bucket),
+            *[Option(BUCKETS_NL[value], value=value, selected=value == bucket) for value in epics.BUCKETS],
             name="bucket",
         ),
     )
+
+
+#: `epics.BUCKETS`' labels in Dutch, by the same keys.
+BUCKETS_NL = {
+    "not-started": "Niet begonnen",
+    "in-progress": "Onderweg",
+    "complete": "Klaar",
+    "no-tasks": "Nog geen taken",
+}
 
 
 def switch(name: str, label: str, checked: bool, title: str) -> Any:
@@ -1008,7 +1286,7 @@ def portfolio_link(epic: Epic) -> Any:
     """The epic's IV Portfolio item, as a way into the Portfolio page rather than as text."""
     if not epic.portfolio_ids:
         return Span("—", style="opacity:.5")
-    return A(epic.portfolio or "portfolio item", href=portfolio_item.to(item=epic.portfolio_ids[0]))
+    return A(epic.portfolio or "portfolio-item", href=portfolio_item.to(item=epic.portfolio_ids[0]))
 
 
 def epic_row(epic: Epic) -> Any:
@@ -1027,6 +1305,38 @@ def epic_row(epic: Epic) -> Any:
     )
 
 
+def epics_word(n: int) -> str:
+    """`1 epic`, `3 epics`."""
+    return f"{n} epic{'' if n == 1 else 's'}"
+
+
+def epic_tone(epic: Epic) -> str:
+    """The tone a card's top rule wears: stuck beats every status."""
+    return "critical" if epic.is_stuck else chart.STATUS_TONES.get(epic.status, "neutral")
+
+
+def epic_card(epic: Epic, show_portfolio: bool = True) -> Any:
+    """One epic as a card: the row's cells, laid out around the battery. Under one
+    portfolio item every card shares the item, so it can leave the line out."""
+    total = epic.done + epic.remaining
+    sub = (portfolio_link(epic) if epic.portfolio_ids else "Geen portfolio") if show_portfolio else None
+    return cards.card(
+        cards.head(
+            A(epic.name, href=epic.url, target="_blank", rel="noopener", title="Open op monday.com"),
+            sub=sub,
+            big=cards.percent(epic.done, total),
+            big_note=f"{bd.fmt(epic.done)} van {bd.fmt(total)} STP" if total else "geen taken",
+        ),
+        cards.tags(chart.status_tag(epic.status), chart.priority_tag(epic.priority), stuck_cell(epic)),
+        chart.battery(epic.done, epic.remaining),
+        cards.foot(
+            chart.people(epic.owner, photo_for) or Span("geen Trekker"),
+            Span(Strong(bd.fmt(epic.remaining)), " STP te gaan") if epic.remaining else None,
+        ),
+        tone=epic_tone(epic),
+    )
+
+
 def epic_summary(shown: list[Epic], everything: list[Epic], orphans: epics.Points) -> Any:
     """What the selection adds up to, as stat tiles, and what it could not account for.
 
@@ -1035,7 +1345,7 @@ def epic_summary(shown: list[Epic], everything: list[Epic], orphans: epics.Point
     """
     total = epics.totals(shown)
     tiles = [
-        chart.tile("Epics", str(len(shown)), f"of {len(everything)} on the epic board"),
+        chart.tile("Epics", str(len(shown)), f"van de {len(everything)} op het epic-bord", "tone-brand"),
         *chart.points_tiles(total),
         chart.progress_tile(total),
     ]
@@ -1043,8 +1353,8 @@ def epic_summary(shown: list[Epic], everything: list[Epic], orphans: epics.Point
     if orphans.tasks:
         note = P(
             Small(
-                f"{orphans.tasks} sprint tasks ({bd.fmt(orphans.done + orphans.remaining)} points) "
-                "are linked to no epic and are in none of these rows.",
+                f"{orphans.tasks} sprinttaken ({bd.fmt(orphans.done + orphans.remaining)} punten) "
+                "hangen aan geen enkele epic en staan dus in geen van deze rijen.",
                 style="opacity:.7",
             )
         )
@@ -1081,7 +1391,7 @@ def status_chips(rows: list[Epic], f: epics.Filters) -> Any:
 
     return Div(
         field,
-        chip("All", "", everything),
+        chip("Alle", "", everything),
         *[chip(chart.status_tag(status), status, count) for status, count in counts],
         **wrapper,
     )
@@ -1106,12 +1416,17 @@ def filter_select(name: str, label: str, any_of: str, values: list[str], selecte
 def epic_filter_fields(rows: list[Epic], f: epics.Filters) -> tuple[Any, ...]:
     """The dropdowns themselves, their options from the fetched rows."""
     return (
-        search_field("Search epic titles…", "Search epic titles", f.search),
-        filter_select("owner", "Trekker", "Any trekker", epics.options(rows, "owner"), f.owner),
+        search_field("Zoek in epic-titels…", "Zoek in epic-titels", f.search),
+        filter_select("owner", "Trekker", "Elke Trekker", epics.options(rows, "owner"), f.owner),
         Label("DAM", portfolio_select(f.dam)),
         progress_field(f.bucket),
-        switch("stuck", "Only stuck", f.stuck, "Epics on Impediment, or with a task that is"),
-        switch("dropped", "Show dropped", f.dropped, "Afgevallen and Overgedragen epics are hidden unless this is on"),
+        switch("stuck", "Alleen vastgelopen", f.stuck, "Epics op Impediment, of met een taak die dat is"),
+        switch(
+            "dropped",
+            "Toon afgevallen",
+            f.dropped,
+            "Afgevallen en Overgedragen epics zijn verborgen tenzij dit aan staat",
+        ),
     )
 
 
@@ -1176,16 +1491,16 @@ def epic_table_rows(
 
 #: Column key, heading, header class. The order here is the order of the table.
 PORTFOLIO_COLUMNS = (
-    ("name", "Item", None),
-    ("stuck", "Stuck", "tight"),
+    ("name", "Portfolio-item", None),
+    ("stuck", "Vast", "tight"),
     ("goal", "Doelstelling", "goal"),
     ("type", "Type", "tight"),
     ("urgency", "Urgentie", "tight"),
     ("lead", "Projectleider", "lead"),
     ("epics", "Epics", "tight"),
-    ("done", "STP done", "tight"),
-    ("remaining", "STP left", "tight"),
-    ("progress", "Progress", "tight"),
+    ("done", "STP klaar", "tight"),
+    ("remaining", "STP te gaan", "tight"),
+    ("progress", "Voortgang", "tight"),
 )
 
 
@@ -1219,6 +1534,51 @@ def portfolio_row(item: PortfolioItem) -> Any:
     )
 
 
+#: How many of an item's epics its card lists before it points at the item's own page.
+CARD_EPICS = 5
+
+
+def portfolio_card(item: PortfolioItem) -> Any:
+    """One portfolio item as a card: the row's figures, and the first few of its epics.
+    The name is the way in, as in the table — the card lists, the item's page explains."""
+    total = item.done + item.remaining
+    listed = [
+        Li(
+            Span(chart.tag(epic.name, epic_tone(epic)), cls="n", title=epic.name),
+            Span(f"{bd.fmt(epic.done)}/{bd.fmt(epic.done + epic.remaining)}", cls="v")
+            if epic.done + epic.remaining
+            else Span("geen taken", cls="v"),
+        )
+        for epic in item.epics[:CARD_EPICS]
+    ]
+    if len(item.epics) > CARD_EPICS:
+        listed.append(
+            Li(A(f"en nog {len(item.epics) - CARD_EPICS} epics", href=portfolio_item.to(item=item.id)), cls="more")
+        )
+    return cards.card(
+        cards.head(
+            A(item.name, href=portfolio_item.to(item=item.id)),
+            sub=" · ".join(filter(None, [item.goal, item.type])),
+            big=cards.percent(item.done, total),
+            big_note=epics_word(len(item.epics)) if item.epics else "geen epics",
+        ),
+        cards.tags(
+            chart.urgency_tag(item.urgency),
+            Span("Projectleider: ", item.lead) if item.lead else None,
+            portfolio_stuck_cell(item),
+        ),
+        chart.battery(item.done, item.remaining),
+        Ul(*listed, cls="elist") if listed else P(Small("Nog geen epics gekoppeld."), style="margin:0"),
+        cards.foot(
+            Span(Strong(bd.fmt(item.done)), " STP klaar"),
+            Span(Strong(bd.fmt(item.remaining)), " STP te gaan"),
+        )
+        if total
+        else None,
+        tone="critical" if item.is_stuck else "" if item.epics else "off",
+    )
+
+
 def portfolio_summary(shown: list[PortfolioItem], everything: list[PortfolioItem], orphans: list[Epic]) -> Any:
     """What the selection adds up to, and the epics it could not place.
 
@@ -1230,19 +1590,21 @@ def portfolio_summary(shown: list[PortfolioItem], everything: list[PortfolioItem
     linked = sum(len(item.epics) for item in shown)
     stuck = sum(1 for item in shown if item.is_stuck)
     tiles = [
-        chart.tile("Portfolio items", str(len(shown)), f"of {len(everything)} on the board · {linked} epics"),
+        chart.tile(
+            "Portfolio-items", str(len(shown)), f"van de {len(everything)} op het bord · {linked} epics", "tone-brand"
+        ),
         *chart.points_tiles(total),
     ]
     if stuck:
-        tiles.append(chart.tile("Stuck", str(stuck), "have a blocked epic", "tone-critical"))
+        tiles.append(chart.tile("Vastgelopen", str(stuck), "hebben een geblokkeerde epic", "tone-critical"))
     tiles.append(chart.progress_tile(total))
     note = None
     if orphans:
         points = sum(e.total for e in orphans)
         note = P(
             Small(
-                f"{len(orphans)} epics ({bd.fmt(points)} points) name a portfolio item the "
-                "IV Portfolio board did not return, and are in none of these rows.",
+                f"{len(orphans)} epics ({bd.fmt(points)} punten) noemen een portfolio-item dat het "
+                "IV Portfolio-bord niet teruggaf, en staan in geen van deze rijen.",
                 style="opacity:.7",
             )
         )
@@ -1252,18 +1614,23 @@ def portfolio_summary(shown: list[PortfolioItem], everything: list[PortfolioItem
 def portfolio_filter_fields(rows: list[PortfolioItem], f: portfolio.Filters) -> tuple[Any, ...]:
     """The dropdowns, built from the rows actually fetched — so no choice comes back empty."""
     return (
-        search_field("Search portfolio items…", "Search portfolio item titles", f.search),
-        filter_select("goal", "Doelstelling", "Any doelstelling", portfolio.options(rows, "goal"), f.goal),
-        filter_select("type", "Type", "Any type", portfolio.options(rows, "type"), f.type),
-        filter_select("urgency", "Urgentie", "Any urgentie", portfolio.options(rows, "urgency"), f.urgency),
-        filter_select("lead", "Projectleider", "Anyone", portfolio.options(rows, "lead"), f.lead),
+        search_field("Zoek in portfolio-items…", "Zoek in de titels van portfolio-items", f.search),
+        filter_select("goal", "Doelstelling", "Elke doelstelling", portfolio.options(rows, "goal"), f.goal),
+        filter_select("type", "Type", "Elk type", portfolio.options(rows, "type"), f.type),
+        filter_select("urgency", "Urgentie", "Elke urgentie", portfolio.options(rows, "urgency"), f.urgency),
+        filter_select("lead", "Projectleider", "Iedereen", portfolio.options(rows, "lead"), f.lead),
         progress_field(f.bucket),
-        switch("stuck", "Only stuck", f.stuck, "Portfolio items with an epic on Impediment, or with a task that is"),
+        switch(
+            "stuck",
+            "Alleen vastgelopen",
+            f.stuck,
+            "Portfolio-items met een epic op Impediment, of met een taak die dat is",
+        ),
         switch(
             "empty",
-            "Show unlinked",
+            "Toon ongekoppelde",
             f.empty,
-            "166 of the 177 items have no epic linked and therefore no progress to show",
+            "166 van de 177 items hebben geen epic gekoppeld en dus geen voortgang om te tonen",
         ),
     )
 
@@ -1318,41 +1685,44 @@ def portfolio_rows(refresh: bool) -> tuple[list[PortfolioItem], list[Epic]]:
 EPIC_VIEW = TableView(
     at="epic",
     title="Epics",
-    about="Story points per epic, summed from the active and the done sprint board.",
-    loading="Loading the epic board…",
+    about="Story points per epic, opgeteld uit het actieve en het done-sprintbord.",
+    loading="Het epic-bord wordt geladen…",
     sorting=epics.SORTING,
     columns=EPIC_COLUMNS,
     load=epic_cache,
     arrange=epics.arrange,
     row=epic_row,
+    card=epic_card,
     summary=epic_summary,
     fields=epic_filter_fields,
     chips=status_chips,
     rows_route=epic_table_rows,
     page_route=epics_page,
     table_cls="epics",
-    board_empty="The epic board came back empty.",
-    none_match="No epics match these filters.",
+    board_empty="Het epic-bord kwam leeg terug.",
+    none_match="Geen epics die aan deze filters voldoen.",
 )
 
 PORTFOLIO_VIEW = TableView(
     at="portfolio",
     title="Portfolio",
-    about="The IV Portfolio board: story points per portfolio item, summed over the epics linked to it.",
-    loading="Loading the portfolio…",
+    about="Het IV Portfolio-bord: story points per portfolio-item, opgeteld over de epics die eraan hangen.",
+    loading="Het portfolio wordt geladen…",
     sorting=portfolio.SORTING,
     columns=PORTFOLIO_COLUMNS,
     load=portfolio_rows,
     arrange=portfolio.arrange,
     row=portfolio_row,
+    card=portfolio_card,
+    wide_cards=True,
     summary=portfolio_summary,
     fields=portfolio_filter_fields,
     rows_route=portfolio_table_rows,
     page_route=portfolio_page,
     table_cls="epics portfolio",
-    board_empty="The IV Portfolio board came back empty.",
-    none_match="No portfolio items match these filters.",
-    caption="Click an item to see its epics.",
+    board_empty="Het IV Portfolio-bord kwam leeg terug.",
+    none_match="Geen portfolio-items die aan deze filters voldoen.",
+    caption="Klik op een item om zijn epics te zien.",
 )
 
 
@@ -1362,7 +1732,7 @@ PORTFOLIO_VIEW = TableView(
 
 #: The epic columns on the detail page. No Portfolio column — every row shares it — and
 #: no sorting: the order is fixed at "blocked first, then most work left".
-DETAIL_COLUMNS = ("Epic", "Status epic", "Stuck", "Trekker", "Priority", "STP done", "STP left", "Progress")
+DETAIL_COLUMNS = ("Epic", "Status epic", "Vast", "Trekker", "Prioriteit", "STP klaar", "STP te gaan", "Voortgang")
 
 
 #: The schemes an `href` out of the boards may carry. Every other link on these pages
@@ -1388,8 +1758,8 @@ def portfolio_meta(item: PortfolioItem) -> Any:
         ("Projectleider", item.lead),
         ("Start", item.start),
         ("Einddatum", item.end),
-        ("Fortes", external_link(item.ref or "open", item.link) if item.link else ""),
-        ("monday.com", A("open the item", href=item.url, target="_blank", rel="noopener")),
+        ("Fortes", external_link(item.ref or "openen", item.link) if item.link else ""),
+        ("monday.com", A("open het item", href=item.url, target="_blank", rel="noopener")),
     ]
     return Div(*[Div(Small(label), Span(value), cls="fact") for label, value in facts if value], cls="meta")
 
@@ -1412,17 +1782,22 @@ def portfolio_detail(item: PortfolioItem) -> Any:
     """One portfolio item: what it is, how far it is, and every epic under it."""
     total = item.points
     tiles = [
-        chart.tile("Epics", str(len(item.epics)), "linked to this item"),
+        chart.tile("Epics", str(len(item.epics)), "gekoppeld aan dit item", "tone-brand"),
         *chart.points_tiles(total),
     ]
     if item.is_stuck:
-        tiles.append(chart.tile("Stuck", str(len(item.stuck_epics)), portfolio_stuck_cell(item), "tone-critical"))
+        tiles.append(chart.tile("Vastgelopen", str(len(item.stuck_epics)), portfolio_stuck_cell(item), "tone-critical"))
     tiles.append(chart.progress_tile(total))
 
-    if item.epics:
+    if item.epics and as_cards():
         body: Any = Div(
+            P(Small("Geblokkeerde epics eerst, dan die met het meeste werk."), cls="lede-scope"),
+            cards.grid(epic_card(epic, show_portfolio=False) for epic in item.epics),
+        )
+    elif item.epics:
+        body = Div(
             Table(
-                Caption("Blocked epics first, then the most work left.", cls="hint"),
+                Caption("Geblokkeerde epics eerst, dan die met het meeste werk.", cls="hint"),
                 Thead(Tr(*[Th(h, cls=None if h == "Epic" else "tight") for h in DETAIL_COLUMNS])),
                 Tbody(*[portfolio_epic_row(epic) for epic in item.epics]),
                 cls="epics",
@@ -1430,7 +1805,7 @@ def portfolio_detail(item: PortfolioItem) -> Any:
             cls="table-wrap",
         )
     else:
-        body = P("No epics are linked to this portfolio item.")
+        body = P("Er zijn geen epics aan dit portfolio-item gekoppeld.")
 
     return Div(
         H2(item.name),
@@ -1447,10 +1822,10 @@ def portfolio_item(item: str = "") -> Any:
     """One portfolio item's page. The content arrives on its own request, behind a spinner."""
     return page(
         "Portfolio",
-        lede("One portfolio item: the epics linked to it, their state, and their story points."),
-        P(A("← All portfolio items", href=portfolio_page)),
+        "Eén portfolio-item: de epics die eraan hangen, hun stand en hun story points.",
+        P(A("← Alle portfolio-items", href=portfolio_page), cls="back"),
         Div(
-            P(Small("Loading the portfolio…"), aria_busy="true"),
+            P(Small("Het portfolio wordt geladen…"), aria_busy="true"),
             id="portfolio-item",
             hx_get=portfolio_item_view.to(item=item),
             hx_trigger="load",
@@ -1469,7 +1844,7 @@ def portfolio_item_view(item: str = "") -> Any:
     found = next((row for row in rows if row.id == item), None)
     if found is None:
         return Div(
-            P("No portfolio item with that id. ", A("Back to the portfolio", href=portfolio_page)),
+            P("Er is geen portfolio-item met dat id. ", A("Terug naar het portfolio", href=portfolio_page)),
             id="portfolio-item",
         )
     return portfolio_detail(found)
@@ -1491,16 +1866,16 @@ def planning_cache(refresh: bool = False) -> planning.Snapshot:
 def planning_date_fields(start: str, end: str) -> Any:
     """The window's two dates. They show the window in use, so they come back out of band."""
     return Div(
-        Label("Start", Input(type="date", name="start", value=start)),
-        Label("Quarter end", Input(type="date", name="end", value=end)),
+        Label("Start", date_field("start", start)),
+        Label("Kwartaaleinde", date_field("end", end)),
         id="planning-dates",
         style="display: contents",
     )
 
 
 DAM_HELP = (
-    "DAM: epics linked to an item on the IV Portfolio board. Non-DAM: epics with no such link. "
-    "The load, the forecast and the Next sprint check all follow this filter."
+    "DAM: epics die gekoppeld zijn aan een item op het IV Portfolio-bord. Niet-DAM: epics zonder die koppeling. "
+    "De bezetting, de prognose en de check op de volgende sprint volgen allemaal dit filter."
 )
 
 
@@ -1513,29 +1888,29 @@ def planning_filters(start: str, end: str, layers: tuple[str, ...], dam: str, th
             planning_date_fields(start, end),
             Label("Portfolio", portfolio_select(dam), title=DAM_HELP),
             Fieldset(
-                Legend("Plan"),
+                Legend("Plannen"),
                 *[
                     Label(
                         Input(type="checkbox", name="layer", value=key, checked=key in layers),
                         label,
-                        title=planning.LAYER_HELP[key],
+                        title=planning.LAYER_HELP_NL[key],
                     )
-                    for key, label in planning.LAYERS.items()
+                    for key, label in planning.LAYERS_NL.items()
                 ],
                 Label(
                     Input(type="checkbox", name="this_quarter", role="switch", checked=this_quarter),
-                    "This quarter",
-                    title=planning.THIS_QUARTER_HELP,
+                    "Dit kwartaal",
+                    title=planning.THIS_QUARTER_HELP_NL,
                 ),
                 cls="layers",
             ),
             cls="filters",
         ),
         Div(
-            Button("Apply", type="submit"),
-            A("Reset", href=planning_page, role="button", cls="secondary outline"),
+            Button("Toepassen", type="submit"),
+            A("Herstellen", href=planning_page, role="button", cls="secondary outline"),
             refresh_button(planning_view.to(refresh=1), "#planning-filters", "#planning"),
-            Small(" loading…", id="spinner"),
+            Small(" laden…", id="spinner"),
             cls="actions",
         ),
         hx_get=planning_view,
@@ -1544,30 +1919,25 @@ def planning_filters(start: str, end: str, layers: tuple[str, ...], dam: str, th
         hx_trigger="change, submit",
         hx_indicator="closest form",
         id="planning-filters",
+        cls="panel",
+        data_refilter="1",
     )
 
 
-def load_tone(load: float | None) -> str:
-    """Overbooked is critical, nearly full is a warning, the rest is fine."""
-    if load is None or load > 1:
-        return "critical"
-    return "warning" if load > 0.85 else "good"
-
-
 def _sprints(value: float | None) -> str:
-    return "nobody" if value is None else f"{value:.1f}"
+    return "niemand" if value is None else f"{value:.1f}"
 
 
 def dam_label(dam: str) -> str:
-    """The filter's label ("DAM only" / "Non-DAM only"), or empty when it is off — or set
+    """The filter's label ("Alleen DAM" / "Alleen niet-DAM"), or empty when it is off — or set
     to a value it does not know, which every DAM check treats as both (`config.keeps_dam`)."""
     return next((label for value, label in PORTFOLIO_LABELS if value == dam and value), "")
 
 
 def selection_text(p: planning.Plan) -> str:
-    """The selection in words, for the heading: "Promised + Later · DAM only · due by …"."""
-    due = f"due by {p.window.end}" if p.this_quarter else ""
-    return " · ".join(filter(None, [planning.layers_text(p.layers), dam_label(p.dam), due]))
+    """The selection in words, for the heading: "Toegezegd + Later · Alleen DAM · due uiterlijk …"."""
+    due = f"due uiterlijk {p.window.end}" if p.this_quarter else ""
+    return " · ".join(filter(None, [planning.layers_text_nl(p.layers), dam_label(p.dam), due]))
 
 
 def planning_tiles(p: planning.Plan) -> Any:
@@ -1577,41 +1947,55 @@ def planning_tiles(p: planning.Plan) -> Any:
     fitting = sum(1 for q in counted if q.fits(w))
     late = sum(1 for q in p.queue if q.late)
     tiles = [
-        chart.tile("Sprints", str(w.sprints), f"whole sprints, to {w.last_day}" if w.sprints else "none fit"),
-        chart.tile("Epics that fit", f"{fitting} of {len(counted)}", "finish within the window"),
-        chart.tile("Late", str(late), "against their own due date", "tone-critical" if late else ""),
+        chart.tile(
+            "Sprints",
+            str(w.sprints),
+            f"hele sprints, tot {w.last_day}" if w.sprints else "er past er geen",
+            "tone-brand",
+        ),
+        chart.tile("Epics die passen", f"{fitting} van {len(counted)}", "klaar binnen de periode"),
+        chart.tile("Te laat", str(late), "ten opzichte van hun eigen due date", "tone-critical" if late else ""),
     ]
     heaviest = planning.most_overbooked(p)
     if heaviest:
         top = heaviest[0]
         load = top.load(w.sprints)
-        text = "nobody" if load is None else f"{load:.0%}"
+        text = "niemand" if load is None else f"{load:.0%}"
         tiles.append(
             chart.tile(
-                "Most booked",
+                "Zwaarst bezet",
                 text,
                 f"{top.key} · {top.name}",
-                f"tone-{load_tone(load)}",
-                title="The selection's STP for this discipline, as a share of its capacity over the whole sprints",
+                f"tone-{planning.load_tone(load)}",
+                title="De STP van de selectie voor deze discipline, als deel van haar capaciteit over de hele sprints",
             )
         )
     if p.problems:
-        tiles.append(chart.tile("Left out", str(len(p.problems)), "epics to fix on monday.com", "tone-warning"))
+        tiles.append(
+            chart.tile(
+                "Buiten beschouwing", str(len(p.problems)), "epics om op monday.com te herstellen", "tone-warning"
+            )
+        )
     return Div(*tiles, cls="kpis")
 
 
-def discipline_table(p: planning.Plan) -> Any:
+def discipline_table(p: planning.Plan, heaviest: list[planning.Discipline]) -> Any:
     """One row per discipline, heaviest first: who, how much they can do, how much there is."""
     sprints = p.window.sprints
     heads = [
         Th("Discipline"),
-        Th("People"),
-        Th("STP / sprint", cls="tight", title="Σ STP per sprint × quarter availability × (1 − overhead)"),
-        Th("Capacity", cls="tight", title=f"STP / sprint × {sprints} whole sprints"),
-        *[Th(planning.LAYERS[key], cls="tight", title=planning.LAYER_HELP[key]) for key in p.layers],
-        Th("Total", cls="tight", title="Every STP the selection needs from this discipline"),
-        Th("Sprints needed", cls="tight", title="Total ÷ STP per sprint"),
-        Th("Load", cls="tight", title="Total ÷ capacity. Over 100% is overbooked"),
+        Th("Mensen"),
+        Th("STP / sprint", cls="tight", title="Σ STP per sprint × beschikbaarheid kwartaal × (1 − overhead)"),
+        Th("Capaciteit", cls="tight", title=f"STP / sprint × {sprints} hele sprints"),
+        *[Th(planning.LAYERS_NL[key], cls="tight", title=planning.LAYER_HELP_NL[key]) for key in p.layers],
+        Th("Totaal", cls="tight", title="Alle STP die de selectie van deze discipline vraagt"),
+        Th("Sprints nodig", cls="tight", title="Totaal ÷ STP per sprint"),
+        Th(
+            "Bezetting",
+            cls="tight",
+            title=f"Totaal ÷ capaciteit. {planning.LOAD_BAND[0]:.0%}–{planning.LOAD_BAND[1]:.0%} is op doel, "
+            f"boven {planning.LOAD_BAND[1]:.0%} is overboekt",
+        ),
     ]
     rows = [
         Tr(
@@ -1621,10 +2005,10 @@ def discipline_table(p: planning.Plan) -> Any:
             Td(f"{d.capacity(sprints):.1f}", cls="num tight"),
             *[Td(f"{d.demand.get(key, 0.0):.1f}" if d.demand.get(key) else "", cls="num tight") for key in p.layers],
             Td(Strong(f"{d.total:.1f}"), cls="num tight"),
-            Td(f"{_sprints(d.sprints_needed)} of {sprints}", cls="num tight"),
+            Td(f"{_sprints(d.sprints_needed)} van {sprints}", cls="num tight"),
             Td(chart.load_meter(d.total, d.capacity(sprints)), cls="tight progress"),
         )
-        for d in planning.most_overbooked(p)
+        for d in heaviest
     ]
     return Div(
         Table(Thead(Tr(*heads)), Tbody(*rows), cls="epics"),
@@ -1639,65 +2023,79 @@ def how_it_works(p: planning.Plan) -> Any:
     sum behind it.
     """
     w = p.window
-    layer_rows = [Tr(Td(Strong(planning.LAYERS[key])), Td(planning.LAYER_HELP[key])) for key in planning.LAYERS]
+    layer_rows = [
+        Tr(Td(Strong(planning.LAYERS_NL[key])), Td(planning.LAYER_HELP_NL[key])) for key in planning.LAYERS_NL
+    ]
     heaviest = planning.most_overbooked(p)
     example = None
     if heaviest and w.sprints and heaviest[0].per_sprint:
         d = heaviest[0]
         load = d.load(w.sprints) or 0.0
         example = P(
-            f"Worked out for {d.key}: {d.total:.1f} STP ÷ ({d.per_sprint:.1f} STP per sprint × {w.sprints} sprints "
+            f"Uitgerekend voor {d.key}: {d.total:.1f} STP ÷ ({d.per_sprint:.1f} STP per sprint × {w.sprints} sprints "
             f"= {d.capacity(w.sprints):.1f}) = {load:.0%}."
         )
     return Details(
-        Summary("How is this calculated?"),
+        Summary("Hoe wordt dit berekend?"),
         Div(
-            H4("What is in each layer"),
+            H4("Wat er in elke laag zit"),
             P(
-                "The layer is decided by the epic's ",
-                Strong("group"),
-                " on the epic board, and its Due date against the quarter end you set. "
-                "The Status epic is shown but does not decide. Afgerond is never planned.",
+                "De laag volgt uit de ",
+                Strong("groep"),
+                " van de epic op het epic-bord, en zijn Due date ten opzichte van het kwartaaleinde dat je "
+                "instelt. De Status epic wordt getoond maar beslist niet. Afgerond wordt nooit gepland.",
             ),
             Table(Tbody(*layer_rows), cls="help"),
-            H4("What is counted"),
+            H4("Wat er meetelt"),
             P(
-                "An epic counts when it is in a ticked layer, passes the Portfolio filter (and, with "
-                "“This quarter” on, has a Due date on or before the quarter end), and has a row on "
-                "Epics-STP-distribution that is linked to it with a split over DE / DB / DS / PO/AT adding up to "
-                "100%. Its work is that row's STP-TODO, exactly as monday.com computes it. Everything else is "
-                "listed under the epics as left out, with a link to fix it on monday.com."
+                "Een epic telt mee als hij in een aangevinkte laag zit, door het Portfolio-filter komt (en, met "
+                "“Dit kwartaal” aan, een Due date op of vóór het kwartaaleinde heeft), en een rij op "
+                "Epics-STP-distribution heeft die eraan gekoppeld is, met een verdeling over DE / DB / DS / PO/AT "
+                "die optelt tot 100%. Zijn werk is de STP-TODO van die rij, precies zoals monday.com die "
+                "berekent. Al het andere staat onder de epics als buiten beschouwing, met een link om het op "
+                "monday.com te herstellen."
             ),
-            H4("How the load (overbooked %) is calculated"),
+            H4("Hoe de bezetting (% overboekt) wordt berekend"),
             Ul(
                 Li(
-                    f"The window runs from {w.start} to the quarter end {w.end}. It holds {w.sprints} whole "
-                    f"three-week sprints, ending {w.last_day}; the days after that are not counted."
+                    f"De periode loopt van {w.start} tot het kwartaaleinde "
+                    f"{w.end}. Daar passen {w.sprints} hele sprints van drie weken in, tot "
+                    f"{w.last_day}; de dagen daarna tellen niet mee."
                 ),
                 Li(
-                    "Per person: STP per sprint × “Beschikbaar komend kwartaal” × (1 − Overhead), "
-                    "from the Capaciteit board. A discipline's STP per sprint is the sum over its people."
+                    "Per persoon: STP per sprint × “Beschikbaar komend kwartaal” × (1 − Overhead), "
+                    "van het Capaciteit-bord. De STP per sprint van een discipline is de som over haar mensen."
                 ),
-                Li("Capacity = STP per sprint × the number of whole sprints."),
-                Li("Total = the sum of every selected epic's STP-TODO × that discipline's percentage."),
+                Li("Capaciteit = STP per sprint × het aantal hele sprints."),
+                Li("Totaal = de som van de STP-TODO van elke gekozen epic × het percentage van die discipline."),
                 Li(
-                    "Load = Total ÷ Capacity. Over 100% means the selection does not fit in the window. "
-                    "Only the selection takes capacity: work you did not tick is assumed not to be done."
+                    "Bezetting = Totaal ÷ Capaciteit. Boven 100% past de selectie niet in de periode. "
+                    "Alleen de selectie neemt capaciteit: werk dat je niet aanvinkt, wordt verondersteld niet "
+                    "gedaan te worden."
                 ),
             ),
             example,
-            H4("How the forecast is calculated"),
+            H4("De twee grafieken (kaartweergave)"),
             P(
-                "The selected epics are queued by layer, then priority, then due date, then smallest first. "
-                "Each discipline works down the queue on its own, and nobody takes over another discipline's "
-                "share. An epic finishes in the sprint its slowest discipline gets through it; it is late when "
-                "that is after its own due date."
+                "Links de capaciteit van elke discipline over de hele sprints: donker wat het Capaciteit-bord "
+                "geeft (STP per sprint × “Beschikbaar komend kwartaal” × (1 − Overhead)), licht wat het zou zijn "
+                "als iedereen 100% beschikbaar was — de overhead blijft dan staan. Rechts de STP die de "
+                f"selectie van de discipline vraagt, als deel van die beschikbare capaciteit. Tussen "
+                f"{planning.LOAD_BAND[0]:.0%} en {planning.LOAD_BAND[1]:.0%} is op doel (groen), daaronder is er "
+                "ruimte over (blauw), daarboven is de discipline overboekt (rood)."
             ),
-            H4("Next sprint"),
+            H4("Hoe de prognose wordt berekend"),
             P(
-                "The open tasks in the sprint board's Next sprint group, split over the disciplines by their "
-                "epic's percentages, against “% beschikbaar komende sprint”. The Portfolio filter applies here; "
-                "the layers do not."
+                "De gekozen epics staan in de rij op laag, dan prioriteit, dan due date, dan de kleinste eerst. "
+                "Elke discipline werkt de rij zelfstandig af, en niemand neemt het deel van een andere "
+                "discipline over. Een epic is klaar in de sprint waarin zijn traagste discipline erdoorheen is; "
+                "hij is te laat als dat na zijn eigen due date valt."
+            ),
+            H4("Volgende sprint"),
+            P(
+                "De open taken in de groep Next sprint op het sprintbord, verdeeld over de disciplines volgens "
+                "de percentages van hun epic, tegen “% beschikbaar komende sprint”. Het Portfolio-filter geldt "
+                "hier; de lagen niet."
             ),
         ),
         cls="how",
@@ -1714,7 +2112,7 @@ def queue_row(q: planning.Planned, w: planning.Window, first_of_layer: bool) -> 
     verdict, tone = q.verdict(w)
     finish = (str(q.finish), Small(f"sprint {q.finish_sprint}")) if q.finish else ()
     return Tr(
-        Td(planning.LAYERS[q.layer], cls="tight"),
+        Td(planning.LAYERS_NL[q.layer], cls="tight"),
         Td(A(q.epic.name, href=q.epic.url, target="_blank", rel="noopener"), cls="item"),
         Td(chart.status_tag(q.epic.status), cls="tight"),
         Td(chart.priority_tag(q.epic.priority), cls="tight"),
@@ -1722,20 +2120,26 @@ def queue_row(q: planning.Planned, w: planning.Window, first_of_layer: bool) -> 
         Td(bd.fmt(q.todo) if q.split.has_todo else "", cls="num tight"),
         Td(A(split_text(q.split), href=q.split.url, target="_blank", rel="noopener"), cls="split"),
         Td(*finish, cls="tight finish"),
-        Td(chart.tag(verdict, tone), cls="tight"),
+        Td(chart.tag(planning.VERDICTS_NL[verdict], tone), cls="tight"),
         cls="layer-start" if first_of_layer else None,
     )
+
+
+#: What the queue says when nothing in the selection can be planned.
+NO_USABLE_SPLIT = "Geen epic in deze selectie heeft al een bruikbare verdeling op Epics-STP-distribution."
 
 
 def queue_table(p: planning.Plan) -> Any:
     shown = p.queue
     if not shown:
-        return P("No epic in this selection has a usable split on Epics-STP-distribution yet.")
-    heads = ("Layer", "Epic", "Status epic", "Priority", "Due", "STP-TODO", "DE / DB / DS / PO", "Finish", "Forecast")
+        return P(NO_USABLE_SPLIT)
+    heads = ("Laag", "Epic", "Status epic", "Prioriteit", "Due", "STP-TODO", "DE / DB / DS / PO", "Klaar", "Prognose")
     rows = [queue_row(q, p.window, i == 0 or shown[i - 1].layer != q.layer) for i, q in enumerate(shown)]
     return Div(
         Table(
-            Caption("In queue order: layer, then priority, then due date, then smallest first.", cls="hint"),
+            Caption(
+                "In de volgorde van de rij: laag, dan prioriteit, dan due date, dan de kleinste eerst.", cls="hint"
+            ),
             Thead(Tr(*[Th(h, cls=None if h == "Epic" else "tight") for h in heads])),
             Tbody(*rows),
             cls="epics plan",
@@ -1760,8 +2164,8 @@ def next_sprint_table(p: planning.Plan) -> Any:
     if n.unplaced:
         note = P(
             Small(
-                f"{bd.fmt(n.unplaced)} more points sit on tasks whose epic has no usable split, "
-                "so they are on no discipline.",
+                f"Nog {bd.fmt(n.unplaced)} punten staan op taken waarvan de epic geen bruikbare verdeling "
+                "heeft, en vallen dus onder geen enkele discipline.",
                 style="opacity:.7",
             )
         )
@@ -1771,9 +2175,9 @@ def next_sprint_table(p: planning.Plan) -> Any:
                 Thead(
                     Tr(
                         Th("Discipline"),
-                        Th("Planned", cls="tight"),
-                        Th("Capacity", cls="tight"),
-                        Th("Load", cls="tight"),
+                        Th("Gepland", cls="tight"),
+                        Th("Capaciteit", cls="tight"),
+                        Th("Bezetting", cls="tight"),
                     )
                 ),
                 Tbody(*rows),
@@ -1791,12 +2195,12 @@ def left_out(p: planning.Plan) -> Any:
     if not p.problems:
         return None
     return Details(
-        Summary(f"{len(p.problems)} epics are left out of every number — fix them on monday.com"),
+        Summary(f"{len(p.problems)} epics tellen nergens mee — herstel ze op monday.com"),
         Ul(
             *[
                 Li(
                     A(pr.epic.name, href=pr.url, target="_blank", rel="noopener"),
-                    Small(f"{planning.LAYERS[pr.layer]} · {pr.reason}"),
+                    Small(f"{planning.LAYERS_NL[pr.layer]} · {pr.reason_nl}"),
                 )
                 for pr in p.problems
             ],
@@ -1805,37 +2209,224 @@ def left_out(p: planning.Plan) -> Any:
     )
 
 
+def discipline_charts(p: planning.Plan, shown: list[planning.Discipline]) -> Any:
+    """The two charts above the discipline cards, side by side, one row per discipline in
+    the cards' order: what each discipline can do this quarter (and could at 100%
+    availability), and how much of that the selection books."""
+    sprints = p.window.sprints
+    capacity = [(d.key, d.name, d.capacity(sprints), d.full_capacity(sprints)) for d in shown]
+    booked = [(d.key, d.name, d.load(sprints), d.total, d.capacity(sprints)) for d in shown]
+    return Div(
+        Div(
+            H4("Capaciteit in het kwartaal", Small(f"STP over {sprints} hele sprints")),
+            chart.capacity_chart(capacity),
+            cls="panel chart-half",
+        ),
+        Div(
+            H4("Geboekt", Small("de STP van de selectie ÷ de beschikbare capaciteit")),
+            chart.booked_chart(booked),
+            cls="panel chart-half",
+        ),
+        cls="chart-pair",
+    )
+
+
+def discipline_card(d: planning.Discipline, p: planning.Plan) -> Any:
+    """One discipline as a card: how booked it is, and the epics it works through in queue
+    order — each with the sprints the forecast puts it in."""
+    sprints = p.window.sprints
+    load = d.load(sprints)
+    tone = planning.load_tone(load) if d.total else "neutral"
+    per = d.per_sprint
+    shares = planning.discipline_shares(p.queue, d)
+    over = planning.overflow(d, sprints)
+    if load is None:
+        verdict = chart.tag("niemand om het te doen", "critical")
+    elif not d.total:
+        verdict = chart.tag("niets gepland", "neutral")
+    else:
+        verdict = chart.tag(planning.LOAD_WORDS[tone], tone)
+    count = epics_word(len(shares))
+    return cards.card(
+        cards.head(
+            f"{d.key} · {d.name}",
+            sub=", ".join(person.name for person in d.people) or "niemand op Capaciteit",
+            big=None if load is None else f"{load:.0%}",
+            big_note=f"{d.total:.1f} van {d.capacity(sprints):.1f} STP",
+        ),
+        cards.tags(verdict, Span(f"{per:.1f} STP per sprint"), Span(f"{_sprints(d.sprints_needed)} sprints nodig")),
+        P(chart.tag(f"{over:.1f} STP past niet in de periode", "critical"), cls="overflow", style="margin:0")
+        if over and per
+        else None,
+        cards.foot(
+            Span(Strong(count), " in de rij"),
+            Button(
+                "Bekijk de epics",
+                type="button",
+                cls="secondary outline open-list",
+            ),
+        )
+        if shares
+        else P(Small("Geen werk voor deze discipline in de selectie."), style="margin:0"),
+        discipline_dialog(d, p, shares) if shares else None,
+        tone=tone,
+        cls="opens" if shares else "",
+        onclick=cards.OPEN_JS if shares else None,
+        title="Klik om de epics te zien" if shares else None,
+    )
+
+
+def strip_help(d: planning.Discipline, sprints: int) -> Any:
+    """What the sprint cells mean, in words, under the list."""
+    return P(
+        f"De blokjes zijn de {sprints} sprints van de periode (S1–S{sprints}). ",
+        cards.strip(sprints, 1, 1),
+        f" Donkerblauw: een sprint waarin {d.key} volgens de prognose aan deze epic werkt — de rij wordt op "
+        "volgorde afgewerkt, met de volledige capaciteit van de discipline. Licht: in die sprint niet. ",
+        cards.strip(sprints, sprints, sprints + 1),
+        " Rood in de laatste sprint: (een deel van) het werk valt na de periode — staat er geen donkerblauw "
+        "voor, dan begint het er pas na.",
+        cls="strip-help",
+    )
+
+
+def discipline_dialog(d: planning.Discipline, p: planning.Plan, shares: list[planning.Share]) -> Any:
+    """Every epic this discipline works on, in queue order, for the card's pop-up."""
+    sprints = p.window.sprints
+    rows = [
+        Tr(
+            Td(f"#{s.position}", cls="tight"),
+            Td(A(s.planned.epic.name, href=s.planned.epic.url, target="_blank", rel="noopener")),
+            Td(planning.LAYERS_NL[s.planned.layer], cls="tight"),
+            Td(str(s.planned.epic.due or "—"), cls="tight"),
+            Td(f"{s.points:.1f}", cls="num tight"),
+            Td(cards.strip(sprints, s.first, s.last), cls="tight"),
+        )
+        for s in shares
+    ]
+    return cards.dialog(
+        f"{d.key} · {d.name}",
+        f"{len(shares)} epics in de rij · {d.total:.1f} STP van {d.capacity(sprints):.1f} STP capaciteit",
+        Table(
+            Thead(
+                Tr(
+                    Th("#", title="Plek in de rij"),
+                    Th("Epic"),
+                    Th("Laag"),
+                    Th("Due"),
+                    Th("STP", title=f"Het deel van {d.key} in de STP-TODO van de epic"),
+                    Th(cards.strip_head(sprints), title="Sprints volgens de prognose"),
+                )
+            ),
+            Tbody(*rows),
+        ),
+        strip_help(d, sprints),
+    )
+
+
+def queue_card(q: planning.Planned, w: planning.Window) -> Any:
+    """One epic in the queue as a card: what is left, how it splits, and when it is done."""
+    verdict, tone = q.verdict(w)
+    shares = [cards.pill(f"{key} {q.split.shares[key]:g}%") for key in planning.DISCIPLINES if q.split.shares.get(key)]
+    return cards.card(
+        cards.head(
+            A(q.epic.name, href=q.epic.url, target="_blank", rel="noopener"),
+            sub=f"due {q.epic.due}" if q.epic.due else "geen due date",
+            big=bd.fmt(q.todo) if q.split.has_todo else None,
+            big_note="STP-TODO",
+        ),
+        cards.tags(
+            chart.tag(planning.VERDICTS_NL[verdict], tone),
+            chart.status_tag(q.epic.status),
+            chart.priority_tag(q.epic.priority),
+        ),
+        A(*shares, href=q.split.url, target="_blank", rel="noopener", cls="tags", title="De verdeling op monday.com")
+        if shares
+        else None,
+        cards.foot(
+            Span("Klaar ", Strong(str(q.finish)), f" · sprint {q.finish_sprint}")
+            if q.finish
+            else Span("Geen einddatum voorspeld"),
+        ),
+        tone=tone,
+    )
+
+
+def queue_cards(p: planning.Plan) -> Any:
+    """The queue as cards, one grid per layer, in queue order."""
+    if not p.queue:
+        return P(NO_USABLE_SPLIT)
+    groups = []
+    for key in p.layers:
+        mine = [q for q in p.queue if q.layer == key]
+        if mine:
+            groups += [
+                H4(
+                    planning.LAYERS_NL[key],
+                    Small(epics_word(len(mine))),
+                    title=planning.LAYER_HELP_NL[key],
+                    cls="layer",
+                ),
+                cards.grid(queue_card(q, p.window) for q in mine),
+            ]
+    return Div(*groups)
+
+
+def next_sprint_cards(p: planning.Plan) -> Any:
+    """The coming sprint, one small card per discipline."""
+    n = p.next_sprint
+    shown = []
+    for key in planning.DISCIPLINES:
+        load, capacity = n.load[key], n.capacity[key]
+        share = load / capacity if capacity else None
+        shown.append(
+            cards.card(
+                cards.head(
+                    f"{key} · {planning.DISCIPLINE_NAMES[key]}",
+                    big=cards.percent(load, capacity),
+                    big_note=f"{load:.1f} van {capacity:.1f} STP",
+                ),
+                chart.load_meter(load, capacity),
+                tone=planning.load_tone(share) if load else "neutral",
+            )
+        )
+    return cards.grid(shown, size="narrow")
+
+
 def planning_section(p: planning.Plan) -> Any:
     """Everything under the filters: tiles, disciplines, the queue, the next sprint, the gaps."""
     w = p.window
+    heaviest = planning.most_overbooked(p)  # one order for the charts, the cards and the table
     unassigned = [
-        P(Small(f"{person.name} on Capaciteit has no discipline as role, so counts for nobody."))
+        P(Small(f"{person.name} heeft op Capaciteit geen discipline als rol, en telt dus voor niemand."))
         for person in p.unassigned_people
     ]
     return Div(
         H2(f"{w.start} – {w.end}"),
-        P(Small(selection_text(p)), cls="lede"),
+        P(Small(selection_text(p)), cls="lede-scope"),
         how_it_works(p),
         planning_tiles(p),
         Div(
             H3("Per discipline"),
-            Small("heaviest load first · strict: nobody takes another discipline's share"),
+            Small("zwaarste bezetting eerst · strikt: niemand neemt het deel van een andere discipline over"),
             cls="section-head",
         ),
-        discipline_table(p),
+        Div(discipline_charts(p, heaviest), cards.grid((discipline_card(d, p) for d in heaviest), size="wide"))
+        if as_cards()
+        else discipline_table(p, heaviest),
         *unassigned,
-        Div(H3("Epics"), Small("the finish is the sprint the slowest discipline gets through it"), cls="section-head"),
-        queue_table(p),
+        Div(H3("Epics"), Small("klaar in de sprint waarin de traagste discipline erdoorheen is"), cls="section-head"),
+        queue_cards(p) if as_cards() else queue_table(p),
         left_out(p),
         Div(
-            H3("Next sprint"),
+            H3("Volgende sprint"),
             Small(
-                f"{p.next_sprint.tasks} open tasks in the Next sprint group · availability for the coming sprint"
+                f"{p.next_sprint.tasks} open taken in de groep Next sprint · beschikbaarheid voor de komende sprint"
                 + (f" · {dam_label(p.dam)}" if dam_label(p.dam) else "")
             ),
             cls="section-head",
         ),
-        next_sprint_table(p),
+        next_sprint_cards(p) if as_cards() else next_sprint_table(p),
         cls="viz",
         id="planning",
     )
@@ -1854,10 +2445,10 @@ def planning_page(
     layers = planning.parse_layers(layer)
     return page(
         "Planning",
-        lede("Planned STP per discipline against capacity, and which epics that lets us finish."),
+        "Geplande STP per discipline tegen de capaciteit, en welke epics we daarmee afkrijgen.",
         planning_filters(start, end, layers, dam, this_quarter),
         Div(
-            P(Small("Loading the planning boards…"), aria_busy="true"),
+            P(Small("De planningsborden worden geladen…"), aria_busy="true"),
             id="planning",
             hx_get=planning_view.to(
                 start=start, end=end, layer=list(layers), dam=dam, **({"this_quarter": 1} if this_quarter else {})

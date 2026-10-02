@@ -20,6 +20,17 @@ the burndown, the epics overview and the IV Portfolio followed, and
   front-end, never a second implementation. No React, Vue, or Svelte — FastHTML is not
   compatible with them.
 - Dutch column titles and task names are normal here; keep them as-is.
+- **The web UI wears the WDODelta huisstijl and speaks Dutch** (`je`, intern). The rules
+  are the `wdod-nicegui` skill's HUISSTIJL.md: donkerblauw `#075895` and blauw `#00b0ea`
+  carry every screen, groen / oranje / rood only mark state, Vivala Sans Rounded → Calibri,
+  6px corners, light by default. The CLI stays English. Where a word is shared with the
+  CLI (layers, their help, forecast verdicts, left-out reasons, the burndown verdict) the
+  Dutch sits next to the English in the same module — `planning.LAYERS_NL`,
+  `LAYER_HELP_NL`, `VERDICTS_NL`, `Split.problem_words` / `Problem.reason_nl`, `LOAD_WORDS`
+  — so change both when a rule changes. **Never translate by matching English text**:
+  the lookups are `[key]`, so a verdict added without its Dutch fails loudly, and the
+  burndown's two verdicts are both worded from one `Burndown.standing` (`chart.verdict_text`
+  is the Dutch), so the CLI and the page cannot disagree on whether a sprint is on track.
 
 ## Commands
 
@@ -73,9 +84,11 @@ overrides where `monday project` writes.
 | `src/mondaycom/planning.py` | Distribution splits, capacity, layers, the queue and its forecast |
 | `src/mondaycom/project.py` | One epic → an Obsidian project note: reference parsing, the template |
 | `src/mondaycom/sorting.py` | The one-string sort spec both tables share (`Sorting`, `label_key`) |
-| `src/mondaycom/chart.py` | The burndown SVG, the palette and tone tokens, status/priority tags, avatars, the battery meter, the table view |
+| `src/mondaycom/chart.py` | The burndown SVG, the palette and tone tokens, status/priority tags, avatars, the battery meter, the table view, Dutch dates (`datum`) |
+| `src/mondaycom/theme.py` | The huisstijl: Pico variable overrides, the brand bar, the tabs, the view switch's look, the footer, the light/dark toggle |
+| `src/mondaycom/cards.py` | The cards view's pieces and CSS: card, head, grid, pill, sprint strip; `TABEL` / `KAARTEN` |
 | `src/mondaycom/cli.py` | `monday` argparse entry point |
-| `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Epics, Portfolio and Planning pages, FT components, caches |
+| `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Epics, Portfolio and Planning pages, their rows and cards, caches |
 | `scripts/` | Bash wrappers so tools run from anywhere |
 | `docs/Project.md` | The vault's project template, as Templater writes it — `project.py` renders it, and ships it in the wheel |
 | `docs/monday-api/` | **Offline mirror of the monday.com API docs — read this first** |
@@ -473,8 +486,28 @@ with Jelle on 2026-09-28, 2026-09-30 and 2026-10-01; ask before changing one.
   in* — on 28 September that plans Q4, not the two days left of Q3. Both are settable.
 - The web page caches one `planning.Snapshot` in `web._PLANNING` (~8s cold) and re-plans
   it per request. The load meter is `chart.load_meter`: the battery's track on a fixed
-  0–150% scale, a tick at capacity, the overflow in the critical tone and "overbooked"
-  in words.
+  0–150% scale, a tick at capacity, and past the tick green while still inside the band,
+  red with "overboekt" in words above it.
+- **Every load wears one band, `planning.LOAD_BAND` = 90–110%** (`planning.load_tone`):
+  under it is blue ("ruimte over"), inside it green ("op doel"), above it red
+  ("overboekt"), and work with nobody to do it is red too. Agreed with Jelle on
+  2026-10-02; the tiles, the meter, the cards and the booked chart all follow it.
+- **The cards view opens "Per discipline" with two horizontal bar charts side by side**
+  (`web.discipline_charts`, `chart.capacity_chart`, `chart.booked_chart`), one row per
+  discipline in the cards' order. Left: capacity over the whole sprints, solid as Capaciteit
+  gives it, the lighter ceiling at 100% availability (`Discipline.full_capacity` — only the
+  availability goes to 100, the Overhead stays). Right: the selection's STP ÷ that actual
+  capacity, on one axis up to the highest load (at least 150%, `chart.booked_scale`) so
+  360% is visibly longer than 253%, with the band shaded and 100% dashed on top. **There are no
+  per-sprint bars**: monday.com holds no sprint per epic, so any split over the quarter's
+  sprints would be invented — Jelle dropped them on 2026-10-02.
+- **A discipline card is folded**: the load, the verdict, what does not fit and how many
+  epics are in its queue. Clicking the card (or "Bekijk de epics") opens a `<dialog>`
+  (`web.discipline_dialog`, `cards.dialog`) with every epic, a scrollable table, rendered
+  with the card so it costs no request. Its last column is the **forecast strip**
+  (`cards.strip`): one cell per sprint of the window, dark where the forecast has this
+  discipline on the epic, light where not, red in the last cell when the work runs past
+  the window. The dialog labels the cells S1…Sn and says this in words (`strip_help`).
 - **The page documents itself.** Each layer checkbox, the Portfolio filter and the table
   headers carry a `title` hover; "How is this calculated?" (`web.how_it_works`) spells out
   the layers, what is counted and the load formula, with the selection's own dates and a
@@ -579,16 +612,19 @@ the same square mark: Hoog `serious`, Middel `warning`, Laag `neutral`.
 | `neutral` | not started | To Do, To Refine, Gerefined, Making ready, … | Low |
 | `off` | dropped / unknown (hollow mark) | Vervallen, Afgevallen, Overgedragen | Very Low, NNB |
 
-- The four severity tones are the data-viz reference **status palette**, which is fixed
-  across themes and distinct from the categorical slots; `active` is the accent blue the
-  chart and the battery already use. Warning and serious sit below 3:1 on the light
-  surface by design, so a tone is **never colour alone** — always dot + label.
+- The severity tones are the **huisstijl's secondary palette**: good groen `#93c01f`,
+  warning oranje `#f29100`, critical rood `#d74116`. The huisstijl has no fourth colour, so
+  `serious` is the step between oranje and rood (`#e2661a`) and reads close to critical —
+  the label tells them apart. `active` is blauw `#00b0ea`; the burndown's actual line and
+  the battery fill are donkerblauw `#075895` (blauw in dark mode). The validator passes the
+  three on the normal-vision floor but fails groen↔oranje for deuteranopes and warns on
+  contrast, so a tone is **never colour alone** — always dot + label. There is no
+  categorical palette: disciplines are named (`DE 50%`), never coloured.
 - A status dot is round; a priority mark is a small square (`.tag.priority`), so the two
   columns never read as the same thing.
 - The burndown's Remaining tile carries the verdict's tone (`chart.verdict_tone`); the
   count tiles carry none, because a row of coloured tiles says nothing.
-- The tokens live on `:root` (with dark steps under both the media query and the
-  `data-theme` scope), so a tag in the task list and a tile above a chart share them.
+- The tokens live on `:root` (with dark steps under the `data-theme="dark"` scope only), so a tag in the task list and a tile above a chart share them.
 
 ## People
 
@@ -610,6 +646,35 @@ Obsidian Tasks plugin syntax, pasted into the vault:
 ```
 
 ## Web UI notes
+
+- **Every page reads as a table or as cards.** The switch in the page head (`web.view_switch`)
+  sets the `weergave` cookie (`tabel` / `kaarten`; anything else is a table) and fires the
+  page's filter form — every form carries `data-refilter` — so the section re-renders from
+  the cache; a page without a form (one portfolio item) reloads. **No route takes the view
+  as a parameter**: `web.WeergaveMiddleware` reads the cookie once per request into a
+  `ContextVar`, and `web.as_cards()` is the one question every renderer asks. It is an
+  ASGI middleware on purpose — a `ContextVar` set in Beforeware does not reach a sync
+  handler's thread, one set in the middleware does. (FastHTML also looks in cookies
+  before the query string for every parameter, so never give a filter a cookie's name.)
+  The cards are a second
+  *layout*, never a second calculation: each card is built in `web.py` next to the row it
+  mirrors (`epic_card`, `portfolio_card`, `task_card`, `discipline_card`, `queue_card`),
+  and `TableView.card` is the overview's card renderer. In cards mode the headings become
+  a sort row of the same buttons (`sort_button`). The sprint's cards are a board of lanes
+  by status tone (`LANES`); a card is its checkbox's label, so it still selects for the
+  markdown. The planning's discipline cards show the load, what does not fit (`overflow`)
+  and where the forecast puts each epic (`discipline_shares`), under the two charts.
+- **Dates are ISO everywhere on the web** (`2026-12-31`), as the boards hold them — the
+  burndown's axis ticks (`14/9`) are the one compact exception. That includes the date
+  *fields*: a native `<input type="date">` displays its value in the browser's locale
+  (09/28/2026 on an English browser) and no page setting changes that, so every date field
+  is `web.date_field` — an ISO text input with a `JJJJ-MM-DD` pattern, and the native
+  picker kept invisible under a calendar button only for its calendar.
+- The design came from the Kwartaalplanbord mock-up in `docs/tmp/`; its teal is **not** a
+  huisstijl colour and was replaced by the two blues.
+- **Light is the default, dark is a toggle** (`<html data-theme="light">`, the moon in the
+  brand bar, `localStorage`). The OS preference is deliberately ignored.
+- `role="group"` is Pico's full-width input group; do not put it on a small control.
 
 - **The app live-reloads.** `fast_app(live=True)` plus `uvicorn --reload` means an
   edit under `src/mondaycom/` refreshes the open browser tab by itself. `--no-reload`
