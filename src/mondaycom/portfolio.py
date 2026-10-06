@@ -18,6 +18,7 @@ up by a task that is. The blocked epics travel with the item so a row can name t
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import date
 from functools import cached_property
 from typing import Any
 
@@ -214,6 +215,15 @@ class Filters:
     bucket: str = ""
     stuck: bool = False
     empty: bool = False
+    #: "Dit kwartaal": only the epics due by the quarter end count under an item — applied
+    #: to the rows before filtering (`due_only`, via `web.TableView.narrow`).
+    this_quarter: bool = False
+
+
+def due_only(items: list[PortfolioItem], day: date) -> list[PortfolioItem]:
+    """Every item with only its epics due on or before `day` left under it. An item whose
+    epics all fall out is unlinked for this question, and hidden like one."""
+    return [replace(item, epics=tuple(e for e in item.epics if e.due_by(day))) for item in items]
 
 
 def matches(item: PortfolioItem, f: Filters) -> bool:

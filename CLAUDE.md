@@ -63,6 +63,7 @@ uv run poe test                      # pytest
 uv run poe format                    # ruff format
 uv run monday web                    # web UI, live-reloading, on http://127.0.0.1:5001
 uv run monday web --no-reload        # same, without the reloader
+./webview.sh                         # the same `monday web`, from anywhere; flags pass through
 ./scripts/sync-docs.sh               # refresh docs/ (or: sync-docs.sh fasthtml)
 ```
 
@@ -88,8 +89,9 @@ overrides where `monday project` writes.
 | `src/mondaycom/theme.py` | The huisstijl: Pico variable overrides, the brand bar, the tabs, the view switch's look, the footer, the light/dark toggle |
 | `src/mondaycom/cards.py` | The cards view's pieces and CSS: card, head, grid, pill, sprint strip; `TABEL` / `KAARTEN` |
 | `src/mondaycom/cli.py` | `monday` argparse entry point |
-| `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Epics, Portfolio and Planning pages, their rows and cards, caches |
+| `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Features (`/epics`), Portfolio and Planning pages, their rows and cards, caches |
 | `scripts/` | Bash wrappers so tools run from anywhere |
+| `webview.sh` | `uv run monday web` from anywhere — the one wrapper in the repo root |
 | `docs/Project.md` | The vault's project template, as Templater writes it — `project.py` renders it, and ships it in the wheel |
 | `docs/monday-api/` | **Offline mirror of the monday.com API docs — read this first** |
 | `docs/fasthtml/` | **Offline mirror of the FastHTML docs — read this first** |
@@ -350,12 +352,34 @@ formula. Today that splits the board 42 / 233.
   items, so it distinguishes nothing. The *link* is the whole signal.
 - A task with **no epic** can never be DAM, but it *is* non-DAM — dropping the filter
   and picking "Non-DAM" are different questions, and both are wanted.
-- `epics.dam_epic_ids` is one epic-board read (~6s), so it is cached in `web._DAM_EPICS`
-  and only fetched when something actually filters on it.
+- The DAM set is a view of `web.epic_rows()` — `_EPICS` when warm, else one points-free
+  epic-board read (~6s) kept in `web._EPIC_ROWS` — computed per request (microseconds)
+  and only read from monday.com when something actually filters on it.
+
+## Dit kwartaal
+
+Every web page carries a **"Dit kwartaal"** switch, and on every page it means one date:
+`planning.this_quarter_end(current sprint end)`, the Planning window's default end
+(`web.quarter_end`). An epic counts when its Due date is on or before it; no due date never
+counts (`config.due_by`, behind `Epic.due_by` and `PlanEpic.due_by`).
+
+- **Sprint**: keeps the tasks on such an epic; a task with no epic drops out
+  (`burndown.narrow(due_epics=…)`). It scopes everything, like DAM, and the scope line
+  names the date. The quarter follows the sprint end in the date field.
+- **Features**: keeps those epics (`epics.due_only`).
+- **Portfolio**: narrows the epics *under* each item first (`portfolio.due_only`), so
+  every number in a row is the quarter's; an item left with none is unlinked and hidden.
+- On both tables it is `TableView.narrow`, applied in `view_rows` to the rows *before*
+  any filter, so the table, the chip counts and the dropdowns all speak of the quarter,
+  while the summary's "van de N" still counts the whole board. `Filters.this_quarter` is
+  only the switch; the date never rides in a URL.
+- The epic due date is the epic board's `due_date`, now one of the overview's columns.
 
 ## Epics page
 
-`monday epic-progress` and `/epics` answer "where does every epic stand?".
+`monday epic-progress` and `/epics` answer "where does every epic stand?". **On the web the
+page is called "Features"** (tab, title, the count tile; Jelle's wording, 2026-10-06); the
+route, the code and the rest of the copy still say epic, as the board does.
 
 - **The STP totals are summed from the two sprint boards**, never from the epic board's
   STP mirrors — see the mirror gotcha above. Open tasks on the active board are
@@ -468,8 +492,8 @@ with Jelle on 2026-09-28, 2026-09-30 and 2026-10-01; ask before changing one.
   the quarter end (`PlanEpic.due_by`, `--this-quarter`); an epic with no due date drops
   out. The team set a due date on every epic meant for this quarter on 2026-10-01, so
   this is the "what did we commit to" view — including a Backlog epic that is due. Like
-  the layers, it does not touch the Next sprint check. Its wording is
-  `planning.THIS_QUARTER_HELP`.
+  the layers, it does not touch the Current or Next sprint check. Its wording is
+  `planning.THIS_QUARTER_HELP`. The other pages carry the same switch — see "Dit kwartaal".
 - **One queue** of the selection: Promised → Later → Backlog, then priority, due date,
   smallest first. The forecast runs on that queue, so it answers the same question.
 - **Strict per discipline.** Each works down the queue on its own; an epic finishes in
@@ -477,13 +501,28 @@ with Jelle on 2026-09-28, 2026-09-30 and 2026-10-01; ask before changing one.
   nobody to do it is "no capacity", never a division by zero.
 - **Capacity** per person per sprint is `STP × available% × (1 − overhead%)`. The plan
   uses the quarter availability for every sprint; the sprint availability feeds only the
-  Next sprint check, which weighs the "Next sprint" group's open tasks by their epic split.
+  Next sprint check, which weighs the "Next sprint" group's open tasks by their Trekker.
   The DAM filter applies to that check (a task with no epic is non-DAM); the layers do not.
+- **The Current sprint check ("Huidige sprint") sits above it** (`planning.current_sprint`,
+  one `sprint_load` with the next): every task in the current sprint group, **Done
+  included** (the sprint is under way; finished work was part of what it took on),
+  Vervallen not, against the **quarter** availability — Capaciteit has no column for a
+  sprint already started. Added 2026-10-06; both choices still await Jelle's confirmation.
+- **Both sprint checks count by Trekker, never by the epic split** (Jelle, 2026-10-06). A
+  task on the sprint board has someone doing it, so its points go *whole* to that person's
+  discipline on Capaciteit — whole numbers that match the board. The distribution
+  percentages are only for the quarter's queue, where nobody has picked the work up yet.
+  Two Trekkers: the first counts. Capaciteit's Person column is empty, so the link is the
+  name (`planning.capacity_person`): the full name, else a unique Capaciteit name that is
+  the Trekker's first word(s) ("Andor" for "Andor Ton"). A Trekker it cannot place, or no
+  Trekker at all, is named under the table (`SprintLoad.unmatched`), not guessed.
 - **Load = Total ÷ Capacity**, per discipline: Total is Σ STP-TODO × the discipline's %
   over the selection, Capacity is STP per sprint × the whole sprints in the window.
 - **Whole sprints only.** The window starts the day after the current sprint (the
   Sprint page's guess) and ends on the last day of the quarter the *first sprint ends
-  in* — on 28 September that plans Q4, not the two days left of Q3. Both are settable.
+  in* — on 28 September that plans Q4, not the two days left of Q3. Both are settable: the
+  web page asks for **"Einde sprint"** (the plan starts the day after) and **"Einde
+  kwartaal"**; the CLI keeps `--start` / `--end`.
 - The web page caches one `planning.Snapshot` in `web._PLANNING` (~8s cold) and re-plans
   it per request. The load meter is `chart.load_meter`: the battery's track on a fixed
   0–150% scale, a tick at capacity, and past the tick green while still inside the band,
@@ -684,7 +723,7 @@ Obsidian Tasks plugin syntax, pasted into the vault:
   markdown". Done-ness is shown by striking the name through and dimming the row,
   never by the tick — every task stays selectable whether it is finished or not.
 - **The nav marks the current page** with `aria-current="page"`, matched on the page
-  title, so `page(title, …)` must be called with the nav label (`Sprint`, `Epics`,
+  title, so `page(title, …)` must be called with the nav label (`Sprint`, `Features`,
   `Portfolio`, `Planning`). One portfolio item's page is titled `Portfolio` too, and puts the item's
   own name in an `H2` inside the swapped partial — which is also the only place it is
   known before the boards are read.
@@ -719,7 +758,7 @@ Obsidian Tasks plugin syntax, pasted into the vault:
   date versus group). Moving the CLI to the group read would make them one thing, at the
   cost of the server-side person/epic rules.
 - The web UI caches the last fetch in module-level state (`web._TASKS`, `web._SPRINT`,
-  `web._EPICS`, `web._PORTFOLIO`, `web._DAM_EPICS`), so the markdown route can re-render a
+  `web._EPICS`, `web._PORTFOLIO`, `web._EPIC_ROWS`), so the markdown route can re-render a
   selection and the epics table can re-sort without re-querying. Fine for one person on localhost; it would
   need a session if the UI is ever shared or run under multiple workers. The same goes for
   `web.monday_client()`, the **one `MondayClient` every route shares** (a client per route was
@@ -734,11 +773,11 @@ Obsidian Tasks plugin syntax, pasted into the vault:
 - The planning forecasts from the start of the *next* sprint, but STP-TODO still holds
   the current sprint's open work, so it overstates demand by whatever is left of the
   current sprint. Capaciteit's `Person` column is empty, so capacity cannot yet be
-  checked against who actually is Trekker.
+  checked against who actually is Trekker, and the sprint checks reach a Trekker's
+  discipline by *name* (`planning.capacity_person`: full name, else a unique first name).
+  That is a stopgap: filling Person and matching on user id would make it exact.
 - "Sprint bord, afgevallen" (`1715341388`) is a third task board nothing reads yet.
   Its points are in no total, done or remaining.
-- `web._DAM_EPICS` re-reads the epic board on its own, even when `_EPICS` already holds
-  every row and their portfolio links. One cache could serve both.
 - The IV Portfolio's Einddatum is empty on all 177 items, so a portfolio item has no
   deadline to be measured against — the page can say how far it is, never whether it is
   on time. If that column ever fills, it deserves the burndown's "on track?" treatment.

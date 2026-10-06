@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Any
 
 from dotenv import load_dotenv
@@ -71,6 +72,20 @@ def as_number(text: str) -> float:
         return float(text) if text else 0.0
     except ValueError:
         return 0.0
+
+
+def as_date(text: str) -> date | None:
+    """A column's text as a date, or `None` when it is blank or not ``YYYY-MM-DD``."""
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def due_by(due: date | None, day: date) -> bool:
+    """A due date on or before `day`. No due date is never due — the one rule "Dit
+    kwartaal" applies to an epic on every page and in the planning."""
+    return due is not None and due <= day
 
 
 @dataclass(frozen=True)

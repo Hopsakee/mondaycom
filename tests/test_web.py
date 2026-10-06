@@ -122,7 +122,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     web._PEOPLE.clear()
     web._EPICS.clear()
     web._PORTFOLIO.clear()
-    web._DAM_EPICS.clear()
+    web._EPIC_ROWS.clear()
     web._SPRINT.clear()
     web._CLIENT.clear()
 
@@ -198,9 +198,9 @@ def test_index_renders_the_filter_form(client: TestClient, sprint_group: Any) ->
 def test_the_nav_has_three_pages_and_marks_the_current_one(client: TestClient, sprint_group: Any) -> None:
     body = client.get("/").text
     assert re.search(r'<a href="/"[^>]*aria-current="page"[^>]*>Sprint</a>', body)
-    assert re.search(r'<a href="/epics"[^>]*>Epics</a>', body) and "Burndown</a>" not in body
+    assert re.search(r'<a href="/epics"[^>]*>Features</a>', body) and "Burndown</a>" not in body
     assert re.search(r'<a href="/portfolio"[^>]*>Portfolio</a>', body)
-    assert 'aria-current="page">Epics' not in body
+    assert 'aria-current="page">Features' not in body
 
 
 def test_person_dropdown_offers_me_everyone_and_each_person(client: TestClient, sprint_group: Any) -> None:
@@ -279,14 +279,12 @@ def test_an_explicit_end_moves_the_window(client: TestClient, sprint_group: Any)
 
 
 def test_dam_keeps_only_tasks_on_a_portfolio_epic(client: TestClient, sprint_group: Any) -> None:
-    web._DAM_EPICS.update({"e2"})
     body = client.get("/sprint_view", params={"person": web.EVERYONE, "dam": DAM}, headers=HTMX).text
     assert task_names(body) == ["Klaar hiermee"]
     assert "iedereen · alleen dam — 1 van 3 taken" in body
 
 
 def test_non_dam_keeps_everything_else_including_tasks_with_no_epic(client: TestClient, sprint_group: Any) -> None:
-    web._DAM_EPICS.update({"e2"})
     body = client.get("/sprint_view", params={"person": web.EVERYONE, "dam": NON_DAM}, headers=HTMX).text
     assert task_names(body) == ["Bouw het dashboard", "Review waterschapsmodel"]
 
@@ -294,10 +292,11 @@ def test_non_dam_keeps_everything_else_including_tasks_with_no_epic(client: Test
 def test_no_portfolio_filter_never_reads_the_epic_board(
     client: TestClient, sprint_group: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(client: Any) -> set[str]:
+    def boom(client: Any) -> list[ep.Epic]:
         raise AssertionError("the epic board was read without a DAM filter")
 
-    monkeypatch.setattr(ep, "dam_epic_ids", boom)
+    web._EPICS.clear()  # cold, so a DAM lookup would have to read the board
+    monkeypatch.setattr(ep, "fetch_epic_rows", boom)
     assert client.get("/sprint_view", headers=HTMX).status_code == 200
 
 
@@ -431,7 +430,6 @@ def test_the_per_person_row_has_no_card_for_someone_who_only_reviews(client: Tes
 
 
 def test_the_per_person_row_ignores_the_person_filter_but_not_the_others(client: TestClient, sprint_group: Any) -> None:
-    web._DAM_EPICS.update({"e2"})
     body = client.get("/sprint_view", params={"person": "23029337", "dam": DAM}, headers=HTMX).text
     cards = re.findall(r'<div class="multiple">', body)
     assert len(cards) == 2, "the whole DAM slice, and Jelle, who owns the one DAM task"
@@ -644,7 +642,7 @@ def test_filtering_everything_out_says_so_instead_of_showing_an_empty_table(clie
 
 def test_the_summary_counts_the_selection_and_the_whole_board(client: TestClient) -> None:
     body = client.get("/epic_table_rows", params={"status": "Done"}, headers=HTMX).text
-    assert tiles(body) == {"Epics": "1", "Klaar": "12", "Te gaan": "0"}
+    assert tiles(body) == {"Features": "1", "Klaar": "12", "Te gaan": "0"}
     assert "van de 4 op het epic-bord" in body
 
 
@@ -1045,7 +1043,7 @@ def test_planning_page_defers_its_numbers_to_a_load_request(planned: TestClient)
 
 
 def test_planning_view_shows_disciplines_queue_and_what_is_left_out(planned: TestClient) -> None:
-    html = planned.get("/planning_view", params={"start": "2026-10-05", "end": "2026-11-18"}, headers=HTMX).text
+    html = planned.get("/planning_view", params={"sprint_end": "2026-10-04", "end": "2026-11-18"}, headers=HTMX).text
     assert 'id="planning"' in html
     # 40 DE points against 10 per sprint over two sprints: 200%, overbooked, said in words.
     assert "200% · overboekt" in html
@@ -1059,7 +1057,7 @@ def test_planning_view_shows_disciplines_queue_and_what_is_left_out(planned: Tes
 
 def test_planning_view_layers_are_checkboxes(planned: TestClient) -> None:
     html = planned.get(
-        "/planning_view", params={"start": "2026-10-05", "end": "2026-11-18", "layer": ["backlog"]}, headers=HTMX
+        "/planning_view", params={"sprint_end": "2026-10-04", "end": "2026-11-18", "layer": ["backlog"]}, headers=HTMX
     ).text
     assert "Backlogding" in html
     assert "Waterbalans" not in html.split("Epics</h3>")[1].split("Volgende sprint")[0]
@@ -1067,11 +1065,11 @@ def test_planning_view_layers_are_checkboxes(planned: TestClient) -> None:
 
 def test_planning_view_defaults_the_window_from_the_current_sprint(planned: TestClient) -> None:
     html = planned.get("/planning_view", headers=HTMX).text
-    assert 'value="2026-10-05"' in html and 'value="2026-12-31"' in html
+    assert 'value="2026-10-04"' in html and 'value="2026-12-31"' in html, "the sprint end and the quarter end"
 
 
 def test_planning_view_reports_a_bad_date(planned: TestClient) -> None:
-    html = planned.get("/planning_view", params={"end": "2026-01-01", "start": "2026-10-05"}, headers=HTMX).text
+    html = planned.get("/planning_view", params={"end": "2026-01-01", "sprint_end": "2026-10-04"}, headers=HTMX).text
     assert "before the start" in html
 
 
@@ -1086,7 +1084,7 @@ def test_planning_view_reports_a_failed_fetch(client: TestClient, monkeypatch: p
 
 
 def test_planning_dam_filter_scopes_the_queue_and_the_load(planned: TestClient) -> None:
-    window = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
+    window = {"sprint_end": "2026-10-04", "end": "2026-11-18", "layer": ["promised", "backlog"]}
     dam = planned.get("/planning_view", params={**window, "dam": DAM}, headers=HTMX).text
     assert "Waterbalans" in dam and "Backlogding" not in dam
     assert "Alleen DAM" in dam
@@ -1098,7 +1096,7 @@ def test_planning_dam_filter_scopes_the_queue_and_the_load(planned: TestClient) 
 
 
 def test_planning_explains_itself_with_the_selections_own_numbers(planned: TestClient) -> None:
-    html = planned.get("/planning_view", params={"start": "2026-10-05", "end": "2026-11-18"}, headers=HTMX).text
+    html = planned.get("/planning_view", params={"sprint_end": "2026-10-04", "end": "2026-11-18"}, headers=HTMX).text
     assert "Hoe wordt dit berekend?" in html
     assert "Uitgerekend voor DE: 40.0 STP ÷ (10.0 STP per sprint × 2 sprints = 20.0) = 200%." in html
     for help_text in pl.LAYER_HELP_NL.values():
@@ -1112,7 +1110,7 @@ def test_planning_layer_checkboxes_carry_their_definition_on_hover(planned: Test
 
 
 def test_planning_treats_an_unknown_dam_value_as_both(planned: TestClient) -> None:
-    params = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"], "dam": "DAM"}
+    params = {"sprint_end": "2026-10-04", "end": "2026-11-18", "layer": ["promised", "backlog"], "dam": "DAM"}
     response = planned.get("/planning_view", params=params, headers=HTMX)
     assert response.status_code == 200
     assert "Waterbalans" in response.text and "Backlogding" in response.text
@@ -1121,7 +1119,7 @@ def test_planning_treats_an_unknown_dam_value_as_both(planned: TestClient) -> No
 
 
 def test_planning_this_quarter_switch_narrows_to_epics_due_by_the_quarter_end(planned: TestClient) -> None:
-    params = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
+    params = {"sprint_end": "2026-10-04", "end": "2026-11-18", "layer": ["promised", "backlog"]}
     html = planned.get("/planning_view", params={**params, "this_quarter": "1"}, headers=HTMX).text
     # Neither fixture epic has a due date, so nothing is due by the quarter end.
     assert "Geen epic in deze selectie" in html
@@ -1266,7 +1264,7 @@ def test_one_portfolio_items_cards_leave_out_the_shared_portfolio(client: TestCl
 
 def test_the_planning_cards_open_with_capacity_and_booked_charts_side_by_side(planned: TestClient) -> None:
     planned.cookies.set("weergave", "kaarten")
-    params = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
+    params = {"sprint_end": "2026-10-04", "end": "2026-11-18", "layer": ["promised", "backlog"]}
     html = planned.get("/planning_view", params=params, headers=HTMX).text
     pair = html.split('class="chart-pair"')[1].split('class="card-grid wide"')[0]
     assert pair.count('class="hbars"') == 2, "capacity on the left, booked on the right"
@@ -1293,7 +1291,7 @@ def test_the_planning_cards_open_with_capacity_and_booked_charts_side_by_side(pl
 
 def test_a_discipline_card_is_folded_and_opens_every_epic_in_a_dialog(planned: TestClient) -> None:
     planned.cookies.set("weergave", "kaarten")
-    params = {"start": "2026-10-05", "end": "2026-11-18", "layer": ["promised", "backlog"]}
+    params = {"sprint_end": "2026-10-04", "end": "2026-11-18", "layer": ["promised", "backlog"]}
     html = planned.get("/planning_view", params=params, headers=HTMX).text
     de = re.search(r'<div [^>]*class="kaart tone-critical opens".*?</dialog>', html, re.S)
     assert de is not None and "showModal()" in de.group(0)
@@ -1318,8 +1316,66 @@ def test_the_booked_axis_runs_to_the_highest_load_and_never_below_150_percent() 
 
 def test_every_date_field_is_iso_text_with_a_calendar(planned: TestClient) -> None:
     html = planned.get("/planning").text
-    for name in ("start", "end"):
+    for name in ("sprint_end", "end"):
         assert re.search(rf'<input type="text" name="{name}"[^>]*pattern="\\d\{{4\}}-\\d\{{2\}}-\\d\{{2\}}"', html), (
             name
         )
     assert html.count('class="date-picker"') == 2 and html.count('aria-label="Kies een datum in de kalender"') == 2
+
+
+# --- "Dit kwartaal" on every page -------------------------------------------------------
+
+
+def test_this_quarter_on_the_sprint_keeps_tasks_on_an_epic_due_by_the_quarter_end(
+    client: TestClient, sprint_group: Any
+) -> None:
+    # The group ends 2026-09-06, so the next sprint ends in September: Q3.
+    web._EPICS[:] = [
+        replace(EPICS[1], due=date(2026, 9, 15)),
+        replace(EPICS[0], id="1999099384", due=date(2026, 10, 1)),
+    ]
+    body = client.get("/sprint_view", params={"person": web.EVERYONE, "this_quarter": "on"}, headers=HTMX).text
+    assert task_names(body) == ["Klaar hiermee"]
+    assert "epic due uiterlijk 2026-09-30" in body
+    assert 'name="this_quarter"' in client.get("/").text
+
+
+def test_this_quarter_on_features_and_portfolio(client: TestClient, sprint_group: Any) -> None:
+    web._EPICS[:] = [replace(EPICS[0], due=date(2026, 9, 1)), *EPICS[1:]]
+    body = client.get("/epic_table_rows", params={"this_quarter": "on", "fields": 1}, headers=HTMX).text
+    assert tiles(body)["Features"] == "1" and "Waterbalans" in body
+    assert re.search(r'name="this_quarter" role="switch" checked', body)
+    shown = client.get("/portfolio_table_rows", params={"this_quarter": "on"}, headers=HTMX).text
+    assert "Geen portfolio-items die aan deze filters voldoen." in shown, "Kernregistratie's epic has no due date"
+    assert 'name="this_quarter"' in client.get("/portfolio_table_rows", params={"fields": 1}, headers=HTMX).text
+
+
+def test_planning_shows_the_current_sprint_above_the_next(planned: TestClient) -> None:
+    html = planned.get("/planning_view", headers=HTMX).text
+    assert html.index("Huidige sprint</h3>") < html.index("Volgende sprint</h3>")
+
+
+def test_planning_starts_the_day_after_the_sprint_end_it_is_given(planned: TestClient) -> None:
+    page = planned.get("/planning").text
+    assert "Einde sprint" in page and "Einde kwartaal" in page and "Kwartaaleinde" not in page
+    html = planned.get("/planning_view", params={"sprint_end": "2026-10-25"}, headers=HTMX).text
+    assert "2026-10-26 – 2026-12-31" in html and 'name="sprint_end" value="2026-10-25"' in html
+    assert "geen datum" in planned.get("/planning_view", params={"sprint_end": "morgen"}, headers=HTMX).text
+
+
+def test_the_sprint_checks_count_whole_points_for_the_trekker_and_name_who_they_could_not_place(
+    planned: TestClient,
+) -> None:
+    web._PLANNING[:] = [
+        replace(
+            PLAN,
+            current_sprint=[
+                bd.SprintItem(id="1", name="t1", points=5, owner="Agnes Dubbink", status="To Do", epic_id="e2"),
+                bd.SprintItem(id="2", name="t2", points=2, owner="Arthur Bennis", status="Done"),
+            ],
+        )
+    ]
+    html = planned.get("/planning_view", headers=HTMX).text
+    current = html.split("Huidige sprint</h3>")[1].split("Volgende sprint</h3>")[0]
+    assert re.search(r'<td class="num tight">5</td>', current), "whole, not 50% of a DE/DB split"
+    assert "Arthur Bennis (2)" in current

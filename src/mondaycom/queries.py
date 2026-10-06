@@ -236,12 +236,13 @@ def epics(board: Board = EPIC_BOARD, limit: int = 500) -> str:
 
 
 def epic_rows(board: Board = EPIC_BOARD, cursor: str | None = None) -> str:
-    """Every epic with what the epics overview shows: owner, status, priority, portfolio.
+    """Every epic with what the epics overview shows: owner, status, priority, portfolio,
+    and the due date "Dit kwartaal" narrows on.
 
     Paginated, because 275 epics fit in one page today but the board only grows.
     Portfolio is a board_relation, so its name is in `display_value` — `text` is null.
     """
-    columns = json.dumps([board.column(a) for a in ("owner", "status", "priority", "portfolio")])
+    columns = json.dumps([board.column(a) for a in ("owner", "status", "priority", "portfolio", "due_date")])
     return dedent(f"""
         query {{
             boards(ids: [{board.id}]) {{

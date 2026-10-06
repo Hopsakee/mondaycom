@@ -22,8 +22,11 @@ epic is planned in, by its group and its due date.
   epic is finished in the sprint its *last* discipline share is.
 - **Strict per discipline.** DE work waits for DE capacity; nobody absorbs another
   discipline's share.
+- **A sprint group counts by Trekker.** Its tasks have someone doing them, so their
+  points go whole to that person's discipline; the split is only for the quarter's queue.
 - **Capacity** per person per sprint is ``STP × available% × (1 − overhead%)``, with
-  the quarter's availability for the plan and the next sprint's for the next-sprint check.
+  the quarter's availability for the plan and the current-sprint check, and the next
+  sprint's for the next-sprint check.
 - The window is **whole sprints only**: from the day after the current sprint ends to
   the quarter end, in blocks of three weeks.
 """
@@ -31,8 +34,9 @@ epic is planned in, by its group and its due date.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from mondaycom import burndown as bd
@@ -50,7 +54,9 @@ from mondaycom.config import (
     PROMISED_GROUPS,
     SPRINT_LENGTH_WEEKS,
     Board,
+    as_date,
     as_number,
+    due_by,
     item_url,
     keeps_dam,
 )
@@ -132,13 +138,6 @@ def parse_mirror(text: str) -> float:
     the 23 the UI shows — whatever the column's own `sum` setting says.
     """
     return sum(as_number(part.strip()) for part in (text or "").split(","))
-
-
-def as_date(text: str) -> date | None:
-    try:
-        return datetime.strptime(text[:10], "%Y-%m-%d").date()
-    except (ValueError, TypeError):
-        return None
 
 
 # --- the three boards -------------------------------------------------------------------
@@ -265,8 +264,8 @@ class PlanEpic:
         return item_url(EPIC_BOARD, self.id)
 
     def due_by(self, day: date) -> bool:
-        """Has a due date, and it is on or before `day`. No due date is never due."""
-        return self.due is not None and self.due <= day
+        """Has a due date, and it is on or before `day` — see `config.due_by`."""
+        return due_by(self.due, day)
 
     @property
     def is_dam(self) -> bool:
@@ -310,6 +309,8 @@ class Snapshot:
     current_end: date
     #: Tasks in the "Next sprint" group, for the next-sprint check.
     next_sprint: list[bd.SprintItem] = field(default_factory=list)
+    #: Tasks in the current sprint group, for the current-sprint check.
+    current_sprint: list[bd.SprintItem] = field(default_factory=list)
 
 
 def fetch(client: MondayClient) -> Snapshot:
@@ -325,9 +326,17 @@ def fetch(client: MondayClient) -> Snapshot:
         PlanEpic.from_item(i) for i in client.all_board_items(lambda cursor: queries.planning_epics(EPIC_BOARD, cursor))
     ]
     people = [Person.from_item(i) for i in client.board_items(queries.capacity_rows(CAPACITY_BOARD))]
-    _, current_end = bd.sprint_window(bd.fetch_sprint_items(client))
+    current = bd.fetch_sprint_items(client)
+    _, current_end = bd.sprint_window(current)
     upcoming = bd.fetch_sprint_items(client, group=NEXT_SPRINT_GROUP)
-    return Snapshot(splits=splits, epics=epics, people=people, current_end=current_end, next_sprint=upcoming)
+    return Snapshot(
+        splits=splits,
+        epics=epics,
+        people=people,
+        current_end=current_end,
+        next_sprint=upcoming,
+        current_sprint=current,
+    )
 
 
 # --- the window -------------------------------------------------------------------------
@@ -378,6 +387,12 @@ def window(current_end: date, start: str = "", end: str = "") -> Window:
     if finish < begin:
         raise ValueError(f"The quarter end {finish} lies before the start {begin}.")
     return Window(begin, finish)
+
+
+def this_quarter_end(current_end: date) -> date:
+    """The quarter end "Dit kwartaal" means while the sprint ending `current_end` runs: the
+    planning window's default end, so every page that narrows on it agrees with this one."""
+    return window(current_end).end
 
 
 # --- the plan ---------------------------------------------------------------------------
@@ -486,14 +501,20 @@ class Problem:
 
 
 @dataclass
-class NextSprint:
-    """The coming sprint: capacity per discipline against the work already in its group."""
+class SprintLoad:
+    """One sprint group: capacity per discipline against the work in the group."""
 
     capacity: dict[str, float]
     load: dict[str, float]
-    #: Open points in the group whose epic has no usable split, so no discipline to put them on.
-    unplaced: float = 0.0
     tasks: int = 0
+    #: Points on tasks whose Trekker has no discipline on Capaciteit, by Trekker, so the
+    #: page can name who is missing. `""` is no Trekker at all.
+    unmatched: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def unplaced(self) -> float:
+        """Every point no discipline could take."""
+        return sum(self.unmatched.values())
 
 
 @dataclass
@@ -505,7 +526,10 @@ class Plan:
     disciplines: list[Discipline]
     queue: list[Planned]
     problems: list[Problem]
-    next_sprint: NextSprint
+    next_sprint: SprintLoad
+    #: The sprint running now: everything committed in its group, against the quarter's
+    #: availability — Capaciteit has no column for the sprint that is already under way.
+    current_sprint: SprintLoad
     #: People on Capaciteit whose role is not one of the four disciplines.
     unassigned_people: list[Person] = field(default_factory=list)
     layers: tuple[str, ...] = ()
@@ -551,28 +575,70 @@ def forecast(queue: list[Planned], disciplines: list[Discipline], w: Window) -> 
         p.finish = w.sprint_end(finish) if finish else None
 
 
-def next_sprint(snapshot: Snapshot, splits: dict[str, Split], dam: str = "") -> NextSprint:
-    """Weigh the Next sprint group per discipline, by each task's epic split.
+def capacity_person(people: list[Person], trekker: str) -> Person | None:
+    """The Capaciteit row for a Trekker as the sprint board names them.
+
+    Capaciteit's Person column is empty, so the link is the name, and its names are not
+    written alike: "Agnes Dubbink" in full, "Andor" for "Andor Ton". The full name wins;
+    otherwise a Capaciteit name that is the Trekker's first word(s), if only one row is.
+    """
+    if not trekker:
+        return None
+    exact = [p for p in people if p.name == trekker]
+    if exact:
+        return exact[0]
+    prefix = [p for p in people if p.name and trekker.startswith(p.name + " ")]
+    return prefix[0] if len(prefix) == 1 else None
+
+
+def sprint_load(
+    snapshot: Snapshot,
+    items: list[bd.SprintItem],
+    dam: str,
+    per_person: Callable[[Person], float],
+    with_done: bool,
+) -> SprintLoad:
+    """Weigh one sprint group per discipline, by each task's **Trekker**.
+
+    A task on the sprint board has someone doing it, so its points go whole to that
+    person's discipline on Capaciteit — never split by the epic's percentages, which are
+    a forecast for work nobody has picked up yet. A task with two Trekkers counts for the
+    first, as a task linked to two epics does. A Trekker with no discipline is reported.
 
     The DAM filter applies — a task with no epic is non-DAM — but the layers do not: the
-    group is what the next sprint holds, whatever layer its epics sit in.
+    group is what the sprint holds, whatever layer its epics sit in. Cancelled work never
+    counts; Done work counts only `with_done`, for a sprint already under way.
     """
     dam_epics = frozenset(e.id for e in snapshot.epics if e.is_dam) if dam else frozenset()
     load = dict.fromkeys(DISCIPLINES, 0.0)
-    unplaced = 0.0
+    unmatched: dict[str, float] = {}
     tasks = 0
-    for item in bd.narrow(snapshot.next_sprint, dam=dam, dam_epics=dam_epics):
-        if item.status == DONE_STATUS or item.status in CANCELLED_STATUSES or not item.points:
+    for item in bd.narrow(items, dam=dam, dam_epics=dam_epics):
+        if item.status in CANCELLED_STATUSES or not item.points:
+            continue
+        if item.status == DONE_STATUS and not with_done:
             continue
         tasks += 1
-        split = splits.get(item.epic_id)
-        if split is None:
-            unplaced += item.points
+        trekker = item.people[0] if item.people else ""
+        person = capacity_person(snapshot.people, trekker)
+        if person is None or person.role not in load:
+            unmatched[trekker] = unmatched.get(trekker, 0.0) + item.points
             continue
-        for key in DISCIPLINES:
-            load[key] += item.points * (split.shares.get(key) or 0.0) / 100
-    capacity = {key: sum(p.next_sprint for p in snapshot.people if p.role == key) for key in DISCIPLINES}
-    return NextSprint(capacity=capacity, load=load, unplaced=unplaced, tasks=tasks)
+        load[person.role] += item.points
+    capacity = {key: sum(per_person(p) for p in snapshot.people if p.role == key) for key in DISCIPLINES}
+    return SprintLoad(capacity=capacity, load=load, tasks=tasks, unmatched=unmatched)
+
+
+def next_sprint(snapshot: Snapshot, dam: str = "") -> SprintLoad:
+    """The Next sprint group's open tasks, against "% beschikbaar komende sprint"."""
+    return sprint_load(snapshot, snapshot.next_sprint, dam, lambda p: p.next_sprint, with_done=False)
+
+
+def current_sprint(snapshot: Snapshot, dam: str = "") -> SprintLoad:
+    """The current sprint group: everything committed to it, Done included — the sprint is
+    under way, and finished work was part of what it took on — against the quarter's
+    availability, the only one Capaciteit has for a sprint that already started."""
+    return sprint_load(snapshot, snapshot.current_sprint, dam, lambda p: p.per_sprint, with_done=True)
 
 
 def plan(
@@ -636,7 +702,8 @@ def plan(
         disciplines=disciplines,
         queue=queue,
         problems=problems,
-        next_sprint=next_sprint(snapshot, splits, dam),
+        next_sprint=next_sprint(snapshot, dam),
+        current_sprint=current_sprint(snapshot, dam),
         unassigned_people=[p for p in snapshot.people if p.role not in DISCIPLINES],
         layers=layers,
         dam=dam,

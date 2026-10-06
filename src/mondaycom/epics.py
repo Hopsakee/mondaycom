@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from datetime import date
 from functools import partial
 from typing import Any
 
@@ -36,7 +37,9 @@ from mondaycom.config import (
     IMPEDIMENT_STATUS,
     TASK_BOARDS,
     Board,
+    as_date,
     as_number,
+    due_by,
     item_url,
     keeps_dam,
 )
@@ -123,6 +126,8 @@ class Epic:
     #: The linked IV Portfolio item's name, from `display_value`; `text` is null here.
     portfolio: str = ""
     portfolio_ids: tuple[str, ...] = ()
+    #: "Due date" on the epic board — what "Dit kwartaal" narrows on.
+    due: date | None = None
     points: Points = field(default_factory=Points)
     #: The epic's own tasks that sit on Impediment. Empty is the normal case.
     impediments: tuple[Impediment, ...] = ()
@@ -131,6 +136,10 @@ class Epic:
     def is_dam(self) -> bool:
         """Linked to the IV Portfolio board, i.e. what the board's DAM formula calls true."""
         return bool(self.portfolio_ids)
+
+    def due_by(self, day: date) -> bool:
+        """Has a due date, and it is on or before `day` — see `config.due_by`."""
+        return due_by(self.due, day)
 
     @property
     def is_blocked(self) -> bool:
@@ -186,6 +195,7 @@ class Epic:
             priority=cells.text("priority"),
             portfolio=cells.text("portfolio"),
             portfolio_ids=cells.linked("portfolio"),
+            due=as_date(cells.text("due_date")),
         )
 
 
@@ -366,6 +376,9 @@ class Filters:
     dropped: bool = False
     #: "Only the stuck ones" — narrows, unlike `dropped`.
     stuck: bool = False
+    #: "Dit kwartaal". Not a test on one row: the page narrows its rows to the quarter's
+    #: before filtering (`web.TableView.narrow`), because the date comes from the sprint.
+    this_quarter: bool = False
 
 
 def matches(epic: Epic, f: Filters) -> bool:
@@ -395,6 +408,11 @@ def arrange(
     """Filter, then sort. An unknown sort key falls back to the default rather than raising."""
     kept = [epic for epic in epics if matches(epic, filters or Filters())]
     return SORTING.apply(kept, sort, desc)
+
+
+def due_only(epics: list[Epic], day: date) -> list[Epic]:
+    """The epics due on or before `day` — what "Dit kwartaal" keeps."""
+    return [epic for epic in epics if epic.due_by(day)]
 
 
 def status_counts(epics: list[Epic], f: Filters) -> list[tuple[str, int]]:
