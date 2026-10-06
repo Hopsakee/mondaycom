@@ -23,16 +23,10 @@ from mondaycom.config import (
     ME,
     SPRINT_BOARD,
     Board,
+    as_date,
     keeps_dam,
 )
 from mondaycom.sprint import Task, sprint_start
-
-
-def _as_date(text: str) -> date | None:
-    try:
-        return datetime.strptime(text[:10], "%Y-%m-%d").date()
-    except (ValueError, TypeError):
-        return None
 
 
 @dataclass
@@ -108,7 +102,7 @@ class SprintItem:
             name=item["name"],
             points=cells.number("story_points"),
             status=cells.text("status"),
-            done_on=_as_date(cells.text("done_date")),
+            done_on=as_date(cells.text("done_date")),
             due_date=cells.text("due_date"),
             owner=cells.text("owner"),
             reviewer=cells.text("reviewer"),
@@ -216,8 +210,9 @@ def narrow(
     dam: str = "",
     dam_epics: frozenset[str] = frozenset(),
     epic: str = "",
+    due_epics: frozenset[str] | None = None,
 ) -> list[SprintItem]:
-    """The sprint items a person / portfolio / epic filter keeps.
+    """The sprint items a person / portfolio / epic / quarter filter keeps.
 
     Applied in Python, not in the query: the group read deliberately has no
     `query_params` (the group *is* the sprint), and the group is 60 rows.
@@ -227,7 +222,9 @@ def narrow(
     review in your list. Whose *points* those are is a separate question; run the
     result through `owned` before building a burndown from it. `dam` is ``config.DAM``
     or ``config.NON_DAM``, resolved against the epic ids that carry a portfolio link —
-    a task with no epic can never be DAM. `epic` is an epic-board item id.
+    a task with no epic can never be DAM. `epic` is an epic-board item id. `due_epics`,
+    when given, keeps only tasks on one of those epics ("Dit kwartaal") — a task with no
+    epic has no due date, so it drops out.
     """
     kept = items
     if person:
@@ -236,6 +233,8 @@ def narrow(
         kept = [item for item in kept if keeps_dam(dam, item.epic_id in dam_epics)]
     if epic:
         kept = [item for item in kept if item.epic_id == epic]
+    if due_epics is not None:
+        kept = [item for item in kept if item.epic_id in due_epics]
     return kept
 
 

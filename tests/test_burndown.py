@@ -313,3 +313,13 @@ def test_work_finished_after_the_sprint_closed_burns_on_the_last_day() -> None:
     b = build(items, today=date(2026, 9, 9))
     assert b.days[-1].remaining == 6 == b.remaining, "the line ends where the tiles say it does"
     assert b.days[-1].burned == 4
+
+
+def test_due_epics_keeps_only_tasks_on_those_epics_and_never_one_with_no_epic() -> None:
+    items = [
+        SprintItem(id="1", name="a", epic_id="e1"),
+        SprintItem(id="2", name="b", epic_id="e2"),
+        SprintItem(id="3", name="c"),
+    ]
+    assert [i.name for i in narrow(items, due_epics=frozenset({"e1"}))] == ["a"]
+    assert len(narrow(items)) == 3, "no set means no filter"

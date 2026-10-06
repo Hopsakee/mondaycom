@@ -340,14 +340,20 @@ def cmd_planning(args: argparse.Namespace) -> int:
     print(f"{fitting} of {len(plan.queue)} epics finish within the {sprints} sprints", end="")
     print(f" · {late} late against their due date")
 
-    nxt = plan.next_sprint
-    print()
-    print(f"Next sprint group: {nxt.tasks} open tasks")
-    for key in planning.DISCIPLINES:
-        load = nxt.load[key] / nxt.capacity[key] if nxt.capacity[key] else None
-        print(f"  {key:<6} {nxt.load[key]:>6.1f} planned of {nxt.capacity[key]:>5.1f} capacity  ({_load(load)})")
-    if nxt.unplaced:
-        print(f"  {bd.fmt(nxt.unplaced)} points sit on tasks whose epic has no usable split, so no discipline")
+    for title, group in (
+        ("Current sprint group", plan.current_sprint),
+        ("Next sprint group", plan.next_sprint),
+    ):
+        print()
+        what = "tasks, Done included" if group is plan.current_sprint else "open tasks"
+        print(f"{title}: {group.tasks} {what}")
+        for key in planning.DISCIPLINES:
+            load = group.load[key] / group.capacity[key] if group.capacity[key] else None
+            planned = bd.fmt(group.load[key])
+            print(f"  {key:<6} {planned:>6} planned of {group.capacity[key]:>5.1f} capacity  ({_load(load)})")
+        for name, points in sorted(group.unmatched.items()):
+            why = f"on {name}, who has no discipline on Capaciteit" if name else "on tasks with no Trekker"
+            print(f"  {bd.fmt(points)} points {why}: not counted")
 
     for person in plan.unassigned_people:
         print(f"note: {person.name} on Capaciteit has role {person.role or '(none)'!r}, which is no discipline")

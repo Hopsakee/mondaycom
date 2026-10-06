@@ -301,9 +301,9 @@ def test_the_dam_filter_narrows_queue_load_problems_and_next_sprint() -> None:
     unlinked_dam = pl.PlanEpic(id="u", name="DAM, no split", group=EPIC_GROUP_ACTIVE, portfolio_ids=("p1",))
     snap = snapshot([dam_epic, unlinked_dam, epic("n")], [split("d", 10, {"DE": 100}), split("n", 30, {"DE": 100})])
     snap.next_sprint = [
-        bd.SprintItem(id="1", name="t1", points=4, status="To Do", epic_id="d"),
-        bd.SprintItem(id="2", name="t2", points=6, status="To Do", epic_id="n"),
-        bd.SprintItem(id="3", name="t3", points=2, status="To Do"),
+        bd.SprintItem(id="1", name="t1", points=4, owner="A", status="To Do", epic_id="d"),
+        bd.SprintItem(id="2", name="t2", points=6, owner="A", status="To Do", epic_id="n"),
+        bd.SprintItem(id="3", name="t3", points=2, owner="A", status="To Do"),
     ]
 
     dam = pl.plan(snap, WINDOW, dam=DAM)
@@ -315,8 +315,8 @@ def test_the_dam_filter_narrows_queue_load_problems_and_next_sprint() -> None:
     non_dam = pl.plan(snap, WINDOW, dam=NON_DAM)
     assert [q.epic.id for q in non_dam.queue] == ["n"]
     assert non_dam.problems == []
-    # A task with no epic is non-DAM, and has no split to put it on a discipline.
-    assert (non_dam.next_sprint.load["DE"], non_dam.next_sprint.unplaced) == (6, 2)
+    # A task with no epic is non-DAM; it still counts for its Trekker.
+    assert (non_dam.next_sprint.load["DE"], non_dam.next_sprint.unplaced) == (8, 0)
 
     both = pl.plan(snap, WINDOW)
     assert de_of(both).total == 40
@@ -336,18 +336,64 @@ def test_people_with_an_unknown_role_are_reported() -> None:
     assert [x.name for x in p.unassigned_people] == ["Z"]
 
 
-def test_next_sprint_weighs_open_tasks_by_their_epic_split() -> None:
+def test_a_sprint_task_counts_whole_for_its_trekker_never_by_the_epic_split() -> None:
     snap = snapshot([epic("a")], [split("a", 10, {"DE": 50, "DB": 50})])
     snap.next_sprint = [
-        bd.SprintItem(id="1", name="t1", points=4, status="To Do", epic_id="a"),
-        bd.SprintItem(id="2", name="t2", points=3, status="Done", epic_id="a"),
-        bd.SprintItem(id="3", name="t3", points=2, status="To Do", epic_id="unlinked"),
+        bd.SprintItem(id="1", name="t1", points=5, owner="A", status="To Do", epic_id="a"),
+        bd.SprintItem(id="2", name="t2", points=3, owner="A", status="Done", epic_id="a"),
+        bd.SprintItem(id="3", name="t3", points=2, owner="C", status="To Do"),
+        bd.SprintItem(id="4", name="t4", points=1, owner="B, C", status="To Do", epic_id="a"),
     ]
     n = pl.plan(snap, WINDOW).next_sprint
-    assert n.tasks == 2
-    assert (n.load["DE"], n.load["DB"], n.load["DS"]) == (2, 2, 0)
-    assert n.unplaced == 2
+    assert n.tasks == 3
+    assert (n.load["DE"], n.load["DB"], n.load["DS"]) == (5, 1, 2), "whole points; two Trekkers: the first"
+    assert n.unplaced == 0
     assert n.capacity["DE"] == 10
+
+
+def test_a_trekker_not_on_capaciteit_is_reported_by_name() -> None:
+    snap = snapshot([], [])
+    snap.next_sprint = [
+        bd.SprintItem(id="1", name="t1", points=2, owner="Arthur Bennis", status="To Do"),
+        bd.SprintItem(id="2", name="t2", points=1, status="To Do"),
+    ]
+    n = pl.plan(snap, WINDOW).next_sprint
+    assert n.unmatched == {"Arthur Bennis": 2, "": 1} and n.unplaced == 3
+    assert sum(n.load.values()) == 0
+
+
+def test_capaciteit_names_match_in_full_or_by_a_unique_first_name() -> None:
+    people = [
+        pl.Person("Agnes Dubbink", "DE"),
+        pl.Person("Andor", "DB"),
+        pl.Person("Jan", "DS"),
+        pl.Person("Jan", "DE"),
+    ]
+    assert pl.capacity_person(people, "Agnes Dubbink") is people[0]
+    assert pl.capacity_person(people, "Andor Ton") is people[1]
+    assert pl.capacity_person(people, "Andorra Smit") is None, "a first name is a whole word"
+    assert pl.capacity_person(people, "Jan de Vries") is None, "two rows could be meant: no guess"
+    assert pl.capacity_person(people, "") is None
+
+
+def test_the_current_sprint_counts_done_work_but_not_cancelled_against_the_quarter() -> None:
+    people = [pl.Person(name="A", role="DE", stp=10, sprint_available=50, quarter_available=80)]
+    snap = snapshot([epic("a")], [split("a", 10, {"DE": 100})], people)
+    snap.current_sprint = [
+        bd.SprintItem(id="1", name="t1", points=4, owner="A", status="To Do", epic_id="a"),
+        bd.SprintItem(id="2", name="t2", points=3, owner="A", status="Done", epic_id="a"),
+        bd.SprintItem(id="3", name="t3", points=5, owner="A", status="Vervallen", epic_id="a"),
+    ]
+    p = pl.plan(snap, WINDOW)
+    assert (p.current_sprint.tasks, p.current_sprint.load["DE"]) == (2, 7)
+    assert p.current_sprint.capacity["DE"] == 8, "the quarter's availability, not the coming sprint's"
+    assert p.next_sprint.tasks == 0, "the two groups stay apart"
+
+
+def test_this_quarter_ends_where_the_planning_window_does() -> None:
+    assert pl.this_quarter_end(date(2026, 10, 4)) == date(2026, 12, 31)
+    assert pl.this_quarter_end(date(2026, 9, 13)) == date(2026, 12, 31), "the next sprint ends in Q4"
+    assert pl.this_quarter_end(date(2026, 9, 6)) == date(2026, 9, 30)
 
 
 def test_this_quarter_keeps_only_epics_due_by_the_quarter_end() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
@@ -52,6 +53,22 @@ def test_a_portfolio_link_is_what_makes_an_epic_dam() -> None:
     """The epic board's own formula is `IF({Portfolio#Count} > 0, TRUE(), FALSE())`."""
     assert ep.Epic.from_item(epic_item("7", "In het portfolio", portfolio="E-DNA BWSD")).is_dam
     assert not ep.Epic.from_item(epic_item("8", "Niet in het portfolio")).is_dam
+
+
+def test_an_epic_reads_its_due_date() -> None:
+    item = board_item(EPIC_BOARD, "Waterbalans", "7", due_date="2026-11-30")
+    assert ep.Epic.from_item(item).due == date(2026, 11, 30)
+    assert ep.Epic.from_item(board_item(EPIC_BOARD, "Zonder", "8", due_date="")).due is None
+
+
+def test_this_quarter_keeps_epics_due_by_the_quarter_end_and_drops_undated_ones() -> None:
+    end = date(2026, 12, 31)
+    rows = [
+        epic("due", due=date(2026, 12, 31)),
+        epic("later", due=date(2027, 1, 15)),
+        epic("undated"),
+    ]
+    assert [e.name for e in ep.due_only(rows, end)] == ["due"]
 
 
 # --- the point totals -----------------------------------------------------------------

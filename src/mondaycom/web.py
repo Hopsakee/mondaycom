@@ -1,8 +1,8 @@
-"""FastHTML web interface: the Sprint, Epics, Portfolio and Planning pages.
+"""FastHTML web interface: the Sprint, Features, Portfolio and Planning pages.
 
 The Sprint page is one read of the board's sprint group, shown four ways: headline
 tiles, the burndown chart, a small burndown per person, and the task list with its
-Obsidian markdown. The Epics page is every epic with its story points burnt down. The
+Obsidian markdown. The Features page (`/epics`) is every epic with its story points burnt down. The
 Portfolio page is the IV Portfolio board with those epics grouped under it, as an
 overview and a detail page per item. The library reference is mirrored under
 docs/fasthtml/ — start with its README.md.
@@ -24,6 +24,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -79,7 +80,7 @@ from mondaycom import burndown as bd
 from mondaycom import cards, chart, epics, lookups, planning, portfolio, sprint, theme
 from mondaycom.cards import KAARTEN, TABEL
 from mondaycom.client import MondayClient, MondayError
-from mondaycom.config import ASSIGNED_TO_ME, DAM, DONE_STATUS, ME, NON_DAM, OPEN_STATUSES
+from mondaycom.config import ASSIGNED_TO_ME, DAM, DONE_STATUS, ME, NON_DAM, OPEN_STATUSES, as_date
 from mondaycom.epics import Epic
 from mondaycom.lookups import Choice
 from mondaycom.portfolio import PortfolioItem
@@ -105,9 +106,9 @@ _ORPHANS = epics.Points()
 # two are joined on every request rather than stored joined — see `portfolio_cache`.
 _PORTFOLIO: list[PortfolioItem] = []
 
-# Epic ids carrying a portfolio link, for the DAM filter. One epic-board read; only
-# fetched when something actually filters on it.
-_DAM_EPICS: set[str] = set()
+# The epic board without its points, for the Sprint page's DAM and "Dit kwartaal"
+# filters when `_EPICS` is cold — see `epic_rows`.
+_EPIC_ROWS: list[Epic] = []
 
 # The three planning boards and the two sprint groups, read once (~8s). Every date and
 # layer a user tries is a re-plan of this, not another read; "Refresh" re-reads it.
@@ -171,12 +172,32 @@ def dam_epics() -> set[str]:
     is warm the answer is a filter over rows we have rather than a second read of the
     same board — that read is ~6s and it is on the Sprint page's request path.
     """
-    if not _DAM_EPICS:
-        if _EPICS:
-            _DAM_EPICS.update(epic.id for epic in _EPICS if epic.is_dam)
-        else:
-            _DAM_EPICS.update(epics.dam_epic_ids(monday_client()))
-    return _DAM_EPICS
+    return {epic.id for epic in epic_rows() if epic.is_dam}
+
+
+def epic_rows() -> list[Epic]:
+    """Every epic with its portfolio link and due date: the Features page's cache when it
+    is warm, otherwise one read of the epic board without the points (~6s), kept."""
+    if _EPICS:
+        return _EPICS
+    if not _EPIC_ROWS:
+        _EPIC_ROWS[:] = epics.fetch_epic_rows(monday_client())
+    return _EPIC_ROWS
+
+
+def quarter_end(sprint_end: date | None = None) -> date:
+    """The last day "Dit kwartaal" counts, on every page: `planning.this_quarter_end` of
+    the current sprint, so the Sprint, Features and Portfolio pages mean the quarter the
+    Planning page plans. The planning's cached read knows the sprint's end; otherwise the
+    sprint group does."""
+    if sprint_end is None:
+        sprint_end = _PLANNING[0].current_end if _PLANNING else bd.sprint_window(sprint_cache())[1]
+    return planning.this_quarter_end(sprint_end)
+
+
+def due_epic_ids(day: date) -> frozenset[str]:
+    """The epics due on or before `day`. No due date is never due."""
+    return frozenset(epic.id for epic in epic_rows() if epic.due_by(day))
 
 
 def person_name(person: str) -> str:
@@ -457,7 +478,7 @@ def view_switch() -> Any:
 def page(title: str, about: str, *content: Any) -> Any:
     """Every page: the brand bar, the title with its lede and the view switch, the tabs
     with the current page marked, the route's content, and the footer."""
-    links = (("Sprint", index), ("Epics", epics_page), ("Portfolio", portfolio_page), ("Planning", planning_page))
+    links = (("Sprint", index), ("Features", epics_page), ("Portfolio", portfolio_page), ("Planning", planning_page))
     return (
         Title(f"{title} · {APP_NAME}"),
         theme.brandbar(APP_NAME),
@@ -597,6 +618,22 @@ def portfolio_stuck_cell(item: PortfolioItem) -> Any:
 # list alone, because a burndown without its done tasks is not a burndown.
 
 
+#: "Dit kwartaal" on the pages other than the planning (`planning.THIS_QUARTER_HELP_NL`):
+#: the same quarter end, the same rule that an epic without a due date drops out.
+THIS_QUARTER_SPRINT = (
+    "Alleen taken op een epic met een Due date op of vóór het kwartaaleinde dat de Planning gebruikt. "
+    "Taken zonder epic, of op een epic zonder due date, vallen af."
+)
+THIS_QUARTER_FEATURES = (
+    "Alleen epics met een Due date op het epic-bord op of vóór het kwartaaleinde dat de Planning gebruikt. "
+    "Epics zonder due date vallen af."
+)
+THIS_QUARTER_PORTFOLIO = (
+    "Onder elk item tellen alleen de epics met een Due date op of vóór het kwartaaleinde dat de Planning "
+    "gebruikt. Een item zonder zo'n epic valt af, tenzij “Toon ongekoppelde” aan staat."
+)
+
+
 #: `this` is a date field's hidden native picker: write the picked date into the text
 #: field as ISO. Its own `change` then bubbles to the form, which asks for the section.
 DATE_PICKED_JS = "this.parentElement.querySelector('input[type=text]').value = this.value"
@@ -654,8 +691,11 @@ def refresh_button(route: Any, form: str, target: str) -> Any:
     )
 
 
-def sprint_controls(end: str, person: str, choices: list[Choice], epic: str, dam: str, open_only: bool) -> Any:
-    """The filter row: sprint end, who, which epic, portfolio, and whether to drop Done."""
+def sprint_controls(
+    end: str, person: str, choices: list[Choice], epic: str, dam: str, open_only: bool, this_quarter: bool
+) -> Any:
+    """The filter row: sprint end, who, which epic, portfolio, whether to drop Done, and
+    whether to keep only work on epics due this quarter."""
     return Form(
         Fieldset(
             Group(
@@ -666,10 +706,8 @@ def sprint_controls(end: str, person: str, choices: list[Choice], epic: str, dam
                 Label("Epic", epic_select(choices, epic)),
                 Label("Portfolio", portfolio_select(dam)),
             ),
-            Label(
-                Input(type="checkbox", name="open_only", role="switch", checked=open_only),
-                "Alleen open taken (Done valt uit de lijst)",
-            ),
+            switch("open_only", "Alleen open taken (Done valt uit de lijst)", open_only, ""),
+            switch("this_quarter", "Dit kwartaal", this_quarter, THIS_QUARTER_SPRINT),
         ),
         Div(
             Button("Bijwerken", type="submit"),
@@ -849,7 +887,7 @@ def task_summary(items: list[Task], own_points: int | None = None) -> Any:
     return Small(f"{len(items)} taken · {points} punten{tail} · {minutes} minuten")
 
 
-def sprint_scope(person: str, dam: str, epic: str, kept: int, total: int) -> str:
+def sprint_scope(person: str, dam: str, epic: str, kept: int, total: int, due: date | None = None) -> str:
     """A one-line description of what the sprint was narrowed to.
 
     Said out loud because a filtered burndown is easy to mistake for the sprint's, and
@@ -857,12 +895,14 @@ def sprint_scope(person: str, dam: str, epic: str, kept: int, total: int) -> str
     the numbers above it are the Trekker's, since the list below holds review work whose
     points belong to somebody else.
     """
-    if kept == total and not person and not dam and not epic:
+    if kept == total and not person and not dam and not epic and not due:
         return ""
     parts = [person or "iedereen"]
     parts += [dam_label(dam).lower()] if dam_label(dam) else []
     if epic:
         parts.append(epic)
+    if due:
+        parts.append(f"epic due uiterlijk {due}")
     line = f"{' · '.join(parts)} — {kept} van {total} taken in de sprintgroep"
     return f"{line} · punten tellen alleen voor de Trekker" if person else line
 
@@ -939,15 +979,21 @@ def sprint_cache(refresh: bool = False) -> list[bd.SprintItem]:
     return _SPRINT[0]
 
 
-def _sprint(end: str, person: str, epic: str, dam: str, open_only: bool, refresh: bool = False) -> SprintPage:
+def _sprint(
+    end: str, person: str, epic: str, dam: str, open_only: bool, this_quarter: bool = False, refresh: bool = False
+) -> SprintPage:
     """Take the group (from the cache unless `refresh`), narrow it, and render every view of it."""
     try:
         name = person_name(person)
         items = sprint_cache(refresh)
         dam_scope = frozenset(dam_epics() if dam else ())
-        # The epic list is built from the person's and the portfolio's scope, so a pick
-        # can never come back empty; an epic that left the scope falls back to "all".
-        in_scope = bd.narrow(items, person=name, dam=dam, dam_epics=dam_scope)
+        # "Dit kwartaal" keeps the tasks on an epic due by the quarter end; like the DAM
+        # filter it scopes everything, and like it the epic board is only read when it is on.
+        due_by = quarter_end(bd.sprint_window(items, end or None)[1]) if this_quarter else None
+        due = due_epic_ids(due_by) if due_by else None
+        # The epic list is built from the person's, the portfolio's and the quarter's
+        # scope, so a pick can never come back empty; an epic that left it falls back to "all".
+        in_scope = bd.narrow(items, person=name, dam=dam, dam_epics=dam_scope, due_epics=due)
         choices = epic_choices(in_scope)
         epic_id = epic if epic in {c.id for c in choices} else ""
         kept = bd.narrow(in_scope, epic=epic_id)
@@ -955,7 +1001,7 @@ def _sprint(end: str, person: str, epic: str, dam: str, open_only: bool, refresh
         # whole group: one person's handful of tasks is far too small a sample to guess
         # the sprint's end date from.
         board = bd.build(bd.owned(kept, name), end=end or None, window_from=items)
-        team = bd.narrow(items, dam=dam, dam_epics=dam_scope, epic=epic_id)
+        team = bd.narrow(items, dam=dam, dam_epics=dam_scope, epic=epic_id, due_epics=due)
         multiples = per_person(team, end, items)
     except FETCH_ERRORS as exc:
         return SprintPage(error(exc, id="sprint"), end, [])
@@ -967,7 +1013,7 @@ def _sprint(end: str, person: str, epic: str, dam: str, open_only: bool, refresh
     _TASKS.update({task.id: task for task in tasks})
 
     epic_name = next((c.name for c in choices if c.id == epic_id), "")
-    scope = sprint_scope(name, dam, epic_name, len(kept), len(items))
+    scope = sprint_scope(name, dam, epic_name, len(kept), len(items), due_by)
     own_points = int(sum(item.points for item in bd.owned(listed, name))) if name else None
     return SprintPage(sprint_section(board, scope, multiples, tasks, own_points), str(board.end), choices)
 
@@ -979,14 +1025,15 @@ def index(
     epic: str = ALL_EPICS,
     dam: str = ANY_PORTFOLIO,
     open_only: bool = False,
+    this_quarter: bool = False,
 ) -> Any:
     """The sprint: filters on top, then tiles, chart, per-person charts, tasks, markdown.
     A page load always reads the group afresh (`sprint_cache`)."""
-    result = _sprint(end, person, epic, dam, open_only, refresh=True)
+    result = _sprint(end, person, epic, dam, open_only, this_quarter, refresh=True)
     return page(
         "Sprint",
         "De huidige sprintgroep: punten afgebrand, wie waar staat, en de taken als Obsidian-checkboxes.",
-        sprint_controls(result.end, person, result.choices, epic, dam, open_only),
+        sprint_controls(result.end, person, result.choices, epic, dam, open_only, this_quarter),
         result.view,
     )
 
@@ -998,6 +1045,7 @@ def sprint_view(
     epic: str = ALL_EPICS,
     dam: str = ANY_PORTFOLIO,
     open_only: bool = False,
+    this_quarter: bool = False,
     refresh: bool = False,
 ) -> Any:
     """The section under the filters, on its own, so a filter change swaps it in place.
@@ -1006,7 +1054,7 @@ def sprint_view(
     epic list ride along out of band: the first shows the window the group settled on,
     the second only offers epics in the new scope.
     """
-    result = _sprint(end, person, epic, dam, open_only, refresh)
+    result = _sprint(end, person, epic, dam, open_only, this_quarter, refresh)
     return (
         result.view,
         sprint_end_field(result.end)(hx_swap_oob="true"),
@@ -1048,8 +1096,8 @@ def epic_cache(refresh: bool = False) -> tuple[list[Epic], epics.Points]:
         rows, orphans = epics.fetch_epics(monday_client())
         _EPICS[:] = rows
         _ORPHANS = orphans
-        # The DAM set is a view of these rows, so it goes stale with them.
-        _DAM_EPICS.clear()
+        # The light rows are a view of this board, so they go stale with it.
+        _EPIC_ROWS.clear()
     return _EPICS, _ORPHANS
 
 
@@ -1075,6 +1123,8 @@ class TableView:
     #: (rows, filters, sort=, desc=) -> the rows shown, in order.
     arrange: Callable[..., list[Any]]
     row: Callable[[Any], Any]
+    #: (rows, quarter end) -> the rows "Dit kwartaal" keeps.
+    narrow: Callable[[list[Any], date], list[Any]]
     #: The same row as a card, for the cards view.
     card: Callable[[Any], Any]
     #: (shown, every row, the extra from `load`) -> the tiles above the table.
@@ -1231,14 +1281,17 @@ def view_rows(view: TableView, f: Any, sort: str, resort: str, refresh: int, fie
     """
     spec = resort or sort
     try:
-        rows, extra = view.load(bool(refresh))
+        everything, extra = view.load(bool(refresh))
+        # "Dit kwartaal" narrows the rows themselves, so the table, the chips' counts and
+        # the dropdowns all speak of the quarter; the summary still counts the whole board.
+        rows = view.narrow(everything, quarter_end()) if f.this_quarter else everything
     except FETCH_ERRORS as exc:
         return Div(error(exc, id=f"{view.at}-table"), id=f"{view.at}-table")
 
     column, desc = view.sorting.parse(spec)
     shown = view.arrange(rows, f, sort=column, desc=desc)
     out = [
-        view_table(view, shown, rows, extra, spec),
+        view_table(view, shown, everything, extra, spec),
         sort_field(view, spec)(hx_swap_oob="true"),
     ]
     if view.chips:
@@ -1345,7 +1398,7 @@ def epic_summary(shown: list[Epic], everything: list[Epic], orphans: epics.Point
     """
     total = epics.totals(shown)
     tiles = [
-        chart.tile("Epics", str(len(shown)), f"van de {len(everything)} op het epic-bord", "tone-brand"),
+        chart.tile("Features", str(len(shown)), f"van de {len(everything)} op het epic-bord", "tone-brand"),
         *chart.points_tiles(total),
         chart.progress_tile(total),
     ]
@@ -1421,6 +1474,7 @@ def epic_filter_fields(rows: list[Epic], f: epics.Filters) -> tuple[Any, ...]:
         Label("DAM", portfolio_select(f.dam)),
         progress_field(f.bucket),
         switch("stuck", "Alleen vastgelopen", f.stuck, "Epics op Impediment, of met een taak die dat is"),
+        switch("this_quarter", "Dit kwartaal", f.this_quarter, THIS_QUARTER_FEATURES),
         switch(
             "dropped",
             "Toon afgevallen",
@@ -1439,15 +1493,25 @@ def epics_page(
     bucket: str = "",
     stuck: bool = False,
     dropped: bool = False,
+    this_quarter: bool = False,
     sort: str = epics.DEFAULT_SORT,
 ) -> Any:
-    """Every epic, sortable on every column and filterable on the ones worth filtering.
+    """The Features page: every epic, sortable on every column and filterable on the ones worth filtering.
 
     The table arrives on its own request (`hx_trigger="load"`) because the first fetch
     reads both sprint boards end to end — a few thousand items — and a spinner beats a
     blank tab for twenty seconds.
     """
-    f = epics.Filters(search=search, status=status, owner=owner, dam=dam, bucket=bucket, stuck=stuck, dropped=dropped)
+    f = epics.Filters(
+        search=search,
+        status=status,
+        owner=owner,
+        dam=dam,
+        bucket=bucket,
+        stuck=stuck,
+        dropped=dropped,
+        this_quarter=this_quarter,
+    )
     return view_page(EPIC_VIEW, f, sort)
 
 
@@ -1470,13 +1534,23 @@ def epic_table_rows(
     bucket: str = "",
     stuck: bool = False,
     dropped: bool = False,
+    this_quarter: bool = False,
     sort: str = epics.DEFAULT_SORT,
     resort: str = "",
     refresh: int = 0,
     fields: int = 0,
 ) -> Any:
     """The table on its own — see `view_rows`."""
-    f = epics.Filters(search=search, status=status, owner=owner, dam=dam, bucket=bucket, stuck=stuck, dropped=dropped)
+    f = epics.Filters(
+        search=search,
+        status=status,
+        owner=owner,
+        dam=dam,
+        bucket=bucket,
+        stuck=stuck,
+        dropped=dropped,
+        this_quarter=this_quarter,
+    )
     return view_rows(EPIC_VIEW, f, sort, resort, refresh, fields)
 
 
@@ -1626,6 +1700,7 @@ def portfolio_filter_fields(rows: list[PortfolioItem], f: portfolio.Filters) -> 
             f.stuck,
             "Portfolio-items met een epic op Impediment, of met een taak die dat is",
         ),
+        switch("this_quarter", "Dit kwartaal", f.this_quarter, THIS_QUARTER_PORTFOLIO),
         switch(
             "empty",
             "Toon ongekoppelde",
@@ -1645,11 +1720,20 @@ def portfolio_page(
     bucket: str = "",
     stuck: bool = False,
     empty: bool = False,
+    this_quarter: bool = False,
     sort: str = portfolio.DEFAULT_SORT,
 ) -> Any:
     """Every IV Portfolio item with the epics under it burnt down."""
     f = portfolio.Filters(
-        search=search, goal=goal, type=type, urgency=urgency, lead=lead, bucket=bucket, stuck=stuck, empty=empty
+        search=search,
+        goal=goal,
+        type=type,
+        urgency=urgency,
+        lead=lead,
+        bucket=bucket,
+        stuck=stuck,
+        empty=empty,
+        this_quarter=this_quarter,
     )
     return view_page(PORTFOLIO_VIEW, f, sort)
 
@@ -1664,6 +1748,7 @@ def portfolio_table_rows(
     bucket: str = "",
     stuck: bool = False,
     empty: bool = False,
+    this_quarter: bool = False,
     sort: str = portfolio.DEFAULT_SORT,
     resort: str = "",
     refresh: int = 0,
@@ -1671,7 +1756,15 @@ def portfolio_table_rows(
 ) -> Any:
     """The table on its own — see `view_rows`."""
     f = portfolio.Filters(
-        search=search, goal=goal, type=type, urgency=urgency, lead=lead, bucket=bucket, stuck=stuck, empty=empty
+        search=search,
+        goal=goal,
+        type=type,
+        urgency=urgency,
+        lead=lead,
+        bucket=bucket,
+        stuck=stuck,
+        empty=empty,
+        this_quarter=this_quarter,
     )
     return view_rows(PORTFOLIO_VIEW, f, sort, resort, refresh, fields)
 
@@ -1684,14 +1777,15 @@ def portfolio_rows(refresh: bool) -> tuple[list[PortfolioItem], list[Epic]]:
 
 EPIC_VIEW = TableView(
     at="epic",
-    title="Epics",
-    about="Story points per epic, opgeteld uit het actieve en het done-sprintbord.",
+    title="Features",
+    about="Story points per feature (een epic op het epic-bord), opgeteld uit het actieve en het done-sprintbord.",
     loading="Het epic-bord wordt geladen…",
     sorting=epics.SORTING,
     columns=EPIC_COLUMNS,
     load=epic_cache,
     arrange=epics.arrange,
     row=epic_row,
+    narrow=epics.due_only,
     card=epic_card,
     summary=epic_summary,
     fields=epic_filter_fields,
@@ -1713,6 +1807,7 @@ PORTFOLIO_VIEW = TableView(
     load=portfolio_rows,
     arrange=portfolio.arrange,
     row=portfolio_row,
+    narrow=portfolio.due_only,
     card=portfolio_card,
     wide_cards=True,
     summary=portfolio_summary,
@@ -1863,11 +1958,12 @@ def planning_cache(refresh: bool = False) -> planning.Snapshot:
     return _PLANNING[0]
 
 
-def planning_date_fields(start: str, end: str) -> Any:
-    """The window's two dates. They show the window in use, so they come back out of band."""
+def planning_date_fields(sprint_end: str, end: str) -> Any:
+    """The window's two dates: the end of the current sprint (the plan starts the day after)
+    and the end of the quarter. They show the window in use, so they come back out of band."""
     return Div(
-        Label("Start", date_field("start", start)),
-        Label("Kwartaaleinde", date_field("end", end)),
+        Label("Einde sprint", date_field("sprint_end", sprint_end)),
+        Label("Einde kwartaal", date_field("end", end)),
         id="planning-dates",
         style="display: contents",
     )
@@ -1875,17 +1971,17 @@ def planning_date_fields(start: str, end: str) -> Any:
 
 DAM_HELP = (
     "DAM: epics die gekoppeld zijn aan een item op het IV Portfolio-bord. Niet-DAM: epics zonder die koppeling. "
-    "De bezetting, de prognose en de check op de volgende sprint volgen allemaal dit filter."
+    "De bezetting, de prognose en de checks op de huidige en de volgende sprint volgen allemaal dit filter."
 )
 
 
-def planning_filters(start: str, end: str, layers: tuple[str, ...], dam: str, this_quarter: bool) -> Any:
+def planning_filters(sprint_end: str, end: str, layers: tuple[str, ...], dam: str, this_quarter: bool) -> Any:
     """The window, the layers, the DAM half and "This quarter". Together they are the
     selection: only the epics they pick take capacity, so every number below answers
     "can we do exactly this?"."""
     return Form(
         Div(
-            planning_date_fields(start, end),
+            planning_date_fields(sprint_end, end),
             Label("Portfolio", portfolio_select(dam), title=DAM_HELP),
             Fieldset(
                 Legend("Plannen"),
@@ -2058,7 +2154,7 @@ def how_it_works(p: planning.Plan) -> Any:
             H4("Hoe de bezetting (% overboekt) wordt berekend"),
             Ul(
                 Li(
-                    f"De periode loopt van {w.start} tot het kwartaaleinde "
+                    f"De periode loopt van {w.start}, de dag na het einde van de huidige sprint, tot het kwartaaleinde "
                     f"{w.end}. Daar passen {w.sprints} hele sprints van drie weken in, tot "
                     f"{w.last_day}; de dagen daarna tellen niet mee."
                 ),
@@ -2091,11 +2187,21 @@ def how_it_works(p: planning.Plan) -> Any:
                 "discipline over. Een epic is klaar in de sprint waarin zijn traagste discipline erdoorheen is; "
                 "hij is te laat als dat na zijn eigen due date valt."
             ),
-            H4("Volgende sprint"),
+            H4("Huidige en volgende sprint"),
             P(
-                "De open taken in de groep Next sprint op het sprintbord, verdeeld over de disciplines volgens "
-                "de percentages van hun epic, tegen “% beschikbaar komende sprint”. Het Portfolio-filter geldt "
-                "hier; de lagen niet."
+                "Een taak op het sprintbord heeft een Trekker, dus haar STP gaan in hun geheel naar de discipline "
+                "van die Trekker op het Capaciteit-bord — niet verdeeld volgens de percentages van de epic; die "
+                "gelden alleen voor de epics hierboven, waar nog niemand aan werkt. Heeft een taak twee Trekkers, "
+                "dan telt hij voor de eerste. Een Trekker die niet op Capaciteit staat, wordt onder de tabel "
+                "genoemd. Vervallen telt niet mee; het Portfolio-filter geldt hier, de lagen en “Dit kwartaal” niet."
+            ),
+            Ul(
+                Li(
+                    "Huidige sprint: alle taken in de huidige sprintgroep, Done meegeteld (de sprint loopt al, en "
+                    "wat af is hoorde bij wat hij op zich nam), tegen de STP per sprint met “Beschikbaar komend "
+                    "kwartaal” — het Capaciteit-bord heeft geen beschikbaarheid voor een sprint die al begonnen is."
+                ),
+                Li("Volgende sprint: de open taken in de groep Next sprint, tegen “% beschikbaar komende sprint”."),
             ),
         ),
         cls="how",
@@ -2148,27 +2254,32 @@ def queue_table(p: planning.Plan) -> Any:
     )
 
 
-def next_sprint_table(p: planning.Plan) -> Any:
-    """The coming sprint: what is in its group per discipline, against this sprint's availability."""
-    n = p.next_sprint
+def unplaced_note(n: planning.SprintLoad) -> Any:
+    """The points no discipline could take, and whose they are — so the fix is obvious."""
+    if not n.unplaced:
+        return None
+    who = ", ".join(f"{name or 'geen Trekker'} ({bd.fmt(points)})" for name, points in sorted(n.unmatched.items()))
+    return P(
+        Small(
+            f"Nog {bd.fmt(n.unplaced)} punten staan op taken waarvan de Trekker geen discipline heeft op "
+            f"Capaciteit, en tellen dus nergens mee: {who}.",
+            style="opacity:.7",
+        )
+    )
+
+
+def sprint_load_table(n: planning.SprintLoad) -> Any:
+    """One sprint group: what is in it per discipline, against that sprint's capacity."""
     rows = [
         Tr(
             Td(Strong(key), " ", Small(planning.DISCIPLINE_NAMES[key])),
-            Td(f"{n.load[key]:.1f}", cls="num tight"),
+            Td(bd.fmt(n.load[key]), cls="num tight"),
             Td(f"{n.capacity[key]:.1f}", cls="num tight"),
             Td(chart.load_meter(n.load[key], n.capacity[key]), cls="tight progress"),
         )
         for key in planning.DISCIPLINES
     ]
-    note = None
-    if n.unplaced:
-        note = P(
-            Small(
-                f"Nog {bd.fmt(n.unplaced)} punten staan op taken waarvan de epic geen bruikbare verdeling "
-                "heeft, en vallen dus onder geen enkele discipline.",
-                style="opacity:.7",
-            )
-        )
+    note = unplaced_note(n)
     return Div(
         Div(
             Table(
@@ -2372,9 +2483,8 @@ def queue_cards(p: planning.Plan) -> Any:
     return Div(*groups)
 
 
-def next_sprint_cards(p: planning.Plan) -> Any:
-    """The coming sprint, one small card per discipline."""
-    n = p.next_sprint
+def sprint_load_cards(n: planning.SprintLoad) -> Any:
+    """One sprint group, one small card per discipline."""
     shown = []
     for key in planning.DISCIPLINES:
         load, capacity = n.load[key], n.capacity[key]
@@ -2384,18 +2494,21 @@ def next_sprint_cards(p: planning.Plan) -> Any:
                 cards.head(
                     f"{key} · {planning.DISCIPLINE_NAMES[key]}",
                     big=cards.percent(load, capacity),
-                    big_note=f"{load:.1f} van {capacity:.1f} STP",
+                    big_note=f"{bd.fmt(load)} van {capacity:.1f} STP",
                 ),
                 chart.load_meter(load, capacity),
                 tone=planning.load_tone(share) if load else "neutral",
             )
         )
-    return cards.grid(shown, size="narrow")
+    return Div(cards.grid(shown, size="narrow"), unplaced_note(n))
 
 
 def planning_section(p: planning.Plan) -> Any:
-    """Everything under the filters: tiles, disciplines, the queue, the next sprint, the gaps."""
+    """Everything under the filters: tiles, disciplines, the queue, the gaps, the current and
+    the next sprint."""
     w = p.window
+    dam = f" · {dam_label(p.dam)}" if dam_label(p.dam) else ""
+    sprint_load = sprint_load_cards if as_cards() else sprint_load_table
     heaviest = planning.most_overbooked(p)  # one order for the charts, the cards and the table
     unassigned = [
         P(Small(f"{person.name} heeft op Capaciteit geen discipline als rol, en telt dus voor niemand."))
@@ -2419,14 +2532,23 @@ def planning_section(p: planning.Plan) -> Any:
         queue_cards(p) if as_cards() else queue_table(p),
         left_out(p),
         Div(
-            H3("Volgende sprint"),
+            H3("Huidige sprint"),
             Small(
-                f"{p.next_sprint.tasks} open taken in de groep Next sprint · beschikbaarheid voor de komende sprint"
-                + (f" · {dam_label(p.dam)}" if dam_label(p.dam) else "")
+                f"{p.current_sprint.tasks} taken in de huidige sprintgroep, Done meegeteld · "
+                f"beschikbaarheid voor het kwartaal{dam}"
             ),
             cls="section-head",
         ),
-        next_sprint_cards(p) if as_cards() else next_sprint_table(p),
+        sprint_load(p.current_sprint),
+        Div(
+            H3("Volgende sprint"),
+            Small(
+                f"{p.next_sprint.tasks} open taken in de groep Next sprint · "
+                f"beschikbaarheid voor de komende sprint{dam}"
+            ),
+            cls="section-head",
+        ),
+        sprint_load(p.next_sprint),
         cls="viz",
         id="planning",
     )
@@ -2434,7 +2556,7 @@ def planning_section(p: planning.Plan) -> Any:
 
 @rt("/planning")
 def planning_page(
-    start: str = "",
+    sprint_end: str = "",
     end: str = "",
     layer: list[str] | None = None,
     dam: str = ANY_PORTFOLIO,
@@ -2446,12 +2568,16 @@ def planning_page(
     return page(
         "Planning",
         "Geplande STP per discipline tegen de capaciteit, en welke epics we daarmee afkrijgen.",
-        planning_filters(start, end, layers, dam, this_quarter),
+        planning_filters(sprint_end, end, layers, dam, this_quarter),
         Div(
             P(Small("De planningsborden worden geladen…"), aria_busy="true"),
             id="planning",
             hx_get=planning_view.to(
-                start=start, end=end, layer=list(layers), dam=dam, **({"this_quarter": 1} if this_quarter else {})
+                sprint_end=sprint_end,
+                end=end,
+                layer=list(layers),
+                dam=dam,
+                **({"this_quarter": 1} if this_quarter else {}),
             ),
             hx_trigger="load",
             hx_swap="outerHTML",
@@ -2461,7 +2587,7 @@ def planning_page(
 
 @rt
 def planning_view(
-    start: str = "",
+    sprint_end: str = "",
     end: str = "",
     layer: list[str] | None = None,
     dam: str = ANY_PORTFOLIO,
@@ -2469,17 +2595,21 @@ def planning_view(
     refresh: int = 0,
 ) -> Any:
     """The section under the filters. The dates ride back out of band, so the fields show
-    the window the plan settled on rather than a blank."""
+    the window the plan settled on rather than a blank. The plan starts the day after the
+    sprint end — the Sprint page's guess unless one is typed in."""
     layers = planning.parse_layers(layer)
     try:
         snapshot = planning_cache(refresh=bool(refresh))
-        w = planning.window(snapshot.current_end, start=start, end=end)
+        current = as_date(sprint_end) if sprint_end else snapshot.current_end
+        if current is None:
+            raise ValueError(f"{sprint_end!r} is geen datum: verwacht JJJJ-MM-DD")
+        w = planning.window(current, end=end)
     except FETCH_ERRORS as exc:
         return error(exc, id="planning")
     p = planning.plan(snapshot, w, layers, dam, this_quarter)
     return (
         planning_section(p),
-        planning_date_fields(str(w.start), str(w.end))(hx_swap_oob="true"),
+        planning_date_fields(str(current), str(w.end))(hx_swap_oob="true"),
     )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
@@ -242,3 +243,21 @@ def test_fetch_portfolio_joins_the_board_to_the_epics(monkeypatch: pytest.Monkey
     items, epics = pf.fetch_portfolio(Fake())  # type: ignore[arg-type]
     assert [i.name for i in items] == ["Kernregistratie"] and items[0].done == 3
     assert [e.name for e in pf.orphan_epics(items, epics)] == ["B"]
+
+
+def test_this_quarter_narrows_the_epics_under_an_item_and_drops_items_left_without() -> None:
+    items = [pf.PortfolioItem(id="p1", name="Eén"), pf.PortfolioItem(id="p2", name="Twee")]
+    rows = pf.attach(
+        items,
+        [
+            epic("nu", ("p1",), done=2, remaining=3, due=date(2026, 11, 1)),
+            epic("straks", ("p1",), remaining=40, due=date(2027, 3, 1)),
+            epic("ongedateerd", ("p2",), remaining=5),
+        ],
+    )
+    narrowed = pf.due_only(rows, date(2026, 12, 31))
+    shown = pf.arrange(narrowed, pf.Filters())
+    assert [i.name for i in shown] == ["Eén"]
+    assert [e.name for e in shown[0].epics] == ["nu"] and shown[0].remaining == 3
+    unlinked = pf.arrange(narrowed, pf.Filters(empty=True))
+    assert {i.name: len(i.epics) for i in unlinked} == {"Eén": 1, "Twee": 0}
