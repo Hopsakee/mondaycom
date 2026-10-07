@@ -218,3 +218,31 @@ overhead. A person's capacity per sprint is `STP × available% × (1 − overhea
 - Only epics with a linked row and a split that adds up to 100% are counted. Everything
   else is listed under the queue as something to fix on monday.com — nothing is matched
   by name and no default split is assumed.
+
+### Alignment with the kwartaalplanbord (temporary)
+
+> **Where your changes go.** Everything you enter in the alignment app — wanted totals,
+> explanations, re-linked DPRs, actions — is stored **locally in
+> `docs/tmp/afstemming.json`**. `docs/tmp/` is ignored by git, so nothing reaches the public
+> repository, but nothing backs it up either. Keep your own copy: the **Opslaan…** button
+> opens the settings page, where you pick Excel (`.xlsx`), LibreOffice Calc (`.ods`), CSV or JSON and a folder outside the
+> repository — **Bladeren…** opens a folder picker that can also make the folder (typing a
+> path, or a Windows one such as `C:\Users\you\OneDrive\…`, works too) — then save — by
+> hand, or with **automatic saving** every 1, 5 (default), 15 or 30 minutes — a switch at
+> the top of the Vergelijking page that is stored the moment you flip it. A download in
+> any of the four formats is there as well. As long as there are changes no copy holds yet,
+> every page shows a warning at the top.
+
+`./webalign.sh` (or `uv run monday align-web`) serves a separate app on port 5002 that puts
+the Q4 plan from the Kwartaalplanbord (`docs/tmp/kwartaalplanbord_database_compleet.json`)
+next to monday.com, linked on the DPR number. Per epic it shows both STP totals and splits,
+marks a difference of more than 10% of monday.com's STP-TODO, and keeps what you decide —
+the total you want, where to change it, why — and actions per person, with the message to
+send them. The top filter row is the Planning page's. Decisions are stored in
+`docs/tmp/afstemming.json`.
+
+```bash
+uv run monday align-splits            # dry run: set the distribution splits to the board's
+uv run monday align-splits --apply    # write them, after a backup
+uv run monday align-splits --restore docs/tmp/verdeling_backup_<stamp>.json   # undo
+```

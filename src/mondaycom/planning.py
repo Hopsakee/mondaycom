@@ -258,6 +258,8 @@ class PlanEpic:
     due: date | None = None
     #: The IV Portfolio items it links to. Linked at all is what makes an epic DAM.
     portfolio_ids: tuple[str, ...] = ()
+    #: The project number, `DPR-223` — what the kwartaalplanbord links on (`align.py`).
+    prj_nr: str = ""
 
     @property
     def url(self) -> str:
@@ -278,6 +280,16 @@ class PlanEpic:
             return LATER if self.due and self.due > quarter_end else PROMISED
         return BACKLOG if self.group == EPIC_GROUP_BACKLOG else ""
 
+    def selected(self, quarter_end: date, layers: tuple[str, ...], dam: str = "", this_quarter: bool = False) -> str:
+        """The layer the selection takes this epic in, or empty when it leaves it out: one
+        of `layers`, past the DAM filter, and due by the quarter end under "This quarter"."""
+        layer = self.layer(quarter_end)
+        if layer not in layers or not keeps_dam(dam, self.is_dam):
+            return ""
+        if this_quarter and not self.due_by(quarter_end):
+            return ""
+        return layer
+
     @classmethod
     def from_item(cls, item: dict[str, Any], board: Board = EPIC_BOARD) -> PlanEpic:
         cells = board.cells(item)
@@ -291,6 +303,7 @@ class PlanEpic:
             priority=cells.text("priority"),
             due=as_date(cells.text("due_date")),
             portfolio_ids=cells.linked("portfolio"),
+            prj_nr=cells.text("prj_nr"),
         )
 
 
@@ -667,10 +680,8 @@ def plan(
     queue: list[Planned] = []
     problems: list[Problem] = []
     for epic in snapshot.epics:
-        layer = epic.layer(w.end)
-        if layer not in layers or not keeps_dam(dam, epic.is_dam):
-            continue
-        if this_quarter and not epic.due_by(w.end):
+        layer = epic.selected(w.end, layers, dam, this_quarter)
+        if not layer:
             continue
         split = splits.get(epic.id)
         if split is not None:

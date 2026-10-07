@@ -30,6 +30,8 @@ class Choice:
     name: str
     #: Profile picture URL, when monday.com has one. Only people carry it; epics never do.
     photo: str = ""
+    #: E-mail address. Only people carry it — the alignment app mails them their actions.
+    email: str = ""
 
 
 def fetch_people(client: MondayClient, board: Board = SPRINT_BOARD) -> list[Choice]:
@@ -39,7 +41,12 @@ def fetch_people(client: MondayClient, board: Board = SPRINT_BOARD) -> list[Choi
     if not boards:
         return []
     people = [
-        Choice(id=str(u["id"]), name=u["name"], photo=(u.get("photo_url") or {}).get("thumb_small") or "")
+        Choice(
+            id=str(u["id"]),
+            name=u["name"],
+            photo=(u.get("photo_url") or {}).get("thumb_small") or "",
+            email=u.get("email") or "",
+        )
         for u in boards[0]["subscribers"]
     ]
     return sorted(people, key=lambda c: c.name.lower())

@@ -11,6 +11,7 @@ import json
 import os
 import sys
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 from typing import Any
 
 from mondaycom import burndown as bd
@@ -413,6 +414,58 @@ def cmd_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def _align_env(args: argparse.Namespace) -> None:
+    """Point the alignment at another dump or decisions file. `align` reads them per call."""
+    if args.board:
+        os.environ["ALIGN_BOARD"] = str(Path(args.board).resolve())
+    if args.state:
+        os.environ["ALIGN_STATE"] = str(Path(args.state).resolve())
+
+
+def cmd_align_splits(args: argparse.Namespace) -> int:
+    """Set Epics-STP-distribution's splits to the kwartaalplanbord's, or undo a run."""
+    from mondaycom import align  # the alignment is temporary; the other commands should not import it
+
+    _align_env(args)
+    with MondayClient() as client:
+        if args.restore:
+            count = align.restore_splits(client, Path(args.restore))
+            print(f"restored {count} distribution rows from {args.restore}")
+            return 0
+        board = align.load_board()
+        monday = align.fetch_monday(client, with_points=False)  # the sprint boards add nothing here
+        rows = align.compare(board, monday, align.State.load())
+        changes = align.split_changes(rows)
+        print(f"{'DPR':<9} {'from (DE/DB/DS/PO-AT)':<22} {'to':<16} epic")
+        for r in changes:
+            print(f"{r.dpr:<9} {align.split_text(r.monday_split):<22} {align.split_text(r.board_split):<16} {r.name}")
+        for r in rows:
+            for warning in r.warnings:
+                print(f"note: {r.dpr or r.name}: {warning}", file=sys.stderr)
+        if not changes:
+            print("every linked distribution row already has the board's split")
+            return 0
+        if not args.apply:
+            print(f"\n{len(changes)} rows would change. Run again with --apply to write them.")
+            return 0
+        backup = align.backup_file()
+        align.apply_splits(client, changes, backup)
+        print(f"\nwrote {len(changes)} rows; the old splits are in {backup}")
+        print(f"undo with: monday align-splits --restore {backup}")
+    return 0
+
+
+def cmd_align_web(args: argparse.Namespace) -> int:
+    """Serve the temporary alignment app, apart from `monday web`."""
+    _align_env(args)
+    os.environ["MONDAY_HOST"] = args.host  # read at import: the app answers to it (localonly.py)
+    from mondaycom import align_web
+
+    print(f"serving on http://{args.host}:{args.port}  (ctrl-c to stop)", file=sys.stderr)
+    align_web.run(host=args.host, port=args.port, reload=args.reload)
+    return 0
+
+
 def cmd_query(args: argparse.Namespace) -> int:
     """Run a raw GraphQL query from a file or stdin and pretty-print the JSON."""
     if args.file == "-":
@@ -441,6 +494,14 @@ def _add_sort(p: argparse.ArgumentParser, *, default: str, columns: Any, noun: s
     p.add_argument("--sort", default=default, choices=sorted(columns), help="column to sort on")
     p.add_argument("--desc", action="store_true", help="sort high to low / Z to A")
     p.add_argument("--search", help=f"keep {noun} whose title contains this (case-insensitive)")
+
+
+def _add_align(p: argparse.ArgumentParser) -> None:
+    """Where the two alignment commands find the dump and keep the decisions."""
+    p.add_argument(
+        "--board", help="the kwartaalplanbord JSON (default: docs/tmp/kwartaalplanbord_database_compleet.json)"
+    )
+    p.add_argument("--state", help="the decisions file (default: afstemming.json next to the board)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -553,6 +614,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not restart or live-refresh the browser on code changes",
     )
     p.set_defaults(func=cmd_web, reload=True)
+
+    p = subs.add_parser(
+        "align-splits", help="set the distribution board's splits to the kwartaalplanbord's (dry run by default)"
+    )
+    p.add_argument("--apply", action="store_true", help="write the new splits to monday.com, after a backup")
+    p.add_argument("--restore", metavar="BACKUP", help="put back the splits a backup file holds")
+    _add_align(p)
+    p.set_defaults(func=cmd_align_splits)
+
+    p = subs.add_parser("align-web", help="serve the kwartaalplanbord vs monday.com alignment app")
+    p.add_argument("--host", default="127.0.0.1", help="bind address (default: localhost only)")
+    p.add_argument("--port", type=int, default=5002, help="port to listen on")
+    p.add_argument("--reload", action="store_true", help="restart on code changes")
+    _add_align(p)
+    p.set_defaults(func=cmd_align_web)
 
     p = subs.add_parser("query", help="run a raw GraphQL query")
     p.add_argument("file", help="path to a .graphql file, or - for stdin")
