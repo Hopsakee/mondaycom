@@ -404,6 +404,7 @@ def cmd_web(args: argparse.Namespace) -> int:
     # Read at import time by web.py, so it has to be set before the import. Without the
     # reloader there is nothing to live-refresh *from*, and the socket only adds noise.
     os.environ["MONDAY_WEB_LIVE"] = "1" if args.reload else "0"
+    os.environ["MONDAY_HOST"] = args.host  # read at import too: the app answers to it (localonly.py)
 
     from mondaycom import web  # imported lazily: the other subcommands should not pay for it
 

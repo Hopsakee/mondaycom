@@ -87,6 +87,8 @@ overrides where `monday project` writes.
 | `src/mondaycom/sorting.py` | The one-string sort spec both tables share (`Sorting`, `label_key`) |
 | `src/mondaycom/chart.py` | The burndown SVG, the palette and tone tokens, status/priority tags, avatars, the battery meter, the table view, Dutch dates (`datum`) |
 | `src/mondaycom/theme.py` | The huisstijl: Pico variable overrides, the brand bar, the tabs, the view switch's look, the footer, the light/dark toggle |
+| `src/mondaycom/localonly.py` | The guard both web apps put in front of every route: their own host name only, nothing another website sends |
+| `src/mondaycom/forms.py` | Filter controls both web apps share: date field, portfolio select, switches, the Planning selection row (`selection_fields`) and their CSS |
 | `src/mondaycom/cards.py` | The cards view's pieces and CSS: card, head, grid, pill, sprint strip; `TABEL` / `KAARTEN` |
 | `src/mondaycom/cli.py` | `monday` argparse entry point |
 | `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Features (`/epics`), Portfolio and Planning pages, their rows and cards, caches |
@@ -167,7 +169,15 @@ like FastAPI and is not. The things that cost time here:
   that is when the route captures the function. Drop it when fasthtml fixes it upstream.
 - **`serve()` is for `python main.py`** and inspects `__main__` itself. This repo
   runs `uvicorn.run` from `web.run()` so it can be a CLI subcommand instead.
-- The UI binds to **127.0.0.1 by default** — the process holds the API token.
+- The UI binds to **127.0.0.1 by default** — the process holds the API token. That keeps out
+  other machines, not other websites in the same browser, so **both apps run
+  `localonly.middleware()`**: they answer only to `127.0.0.1`/`localhost` (plus the `--host`
+  address, via `MONDAY_HOST` set by the CLI before import) — no DNS rebinding — and refuse a
+  request the browser marks cross-site (following a *link* to a page is allowed), a POST from
+  a foreign `Origin`, and a POST without `HX-Request`. A route that changes something must be
+  `@app.post`: a bare `@rt` answers GET too, which an `<img>` can send. Tests use
+  `TestClient(app, base_url="http://127.0.0.1")`, and a socket needs a full
+  `ws://127.0.0.1/…` URL — the test client's default host, `testserver`, is refused.
 
 ## Burndown
 
