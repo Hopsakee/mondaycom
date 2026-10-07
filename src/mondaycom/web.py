@@ -46,7 +46,6 @@ from fasthtml.common import (
     Header,
     Input,
     Label,
-    Legend,
     Li,
     Main,
     Nav,
@@ -77,11 +76,21 @@ from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
 from mondaycom import burndown as bd
-from mondaycom import cards, chart, epics, lookups, planning, portfolio, sprint, theme
+from mondaycom import cards, chart, epics, forms, localonly, lookups, planning, portfolio, sprint, theme
 from mondaycom.cards import KAARTEN, TABEL
 from mondaycom.client import MondayClient, MondayError
-from mondaycom.config import ASSIGNED_TO_ME, DAM, DONE_STATUS, ME, NON_DAM, OPEN_STATUSES, as_date
+from mondaycom.config import ASSIGNED_TO_ME, DONE_STATUS, ME, OPEN_STATUSES, as_date
 from mondaycom.epics import Epic
+from mondaycom.forms import (
+    ANY_PORTFOLIO,
+    dam_label,
+    date_field,
+    planning_date_fields,
+    portfolio_select,
+    refresh_button,
+    selection_fields,
+    switch,
+)
 from mondaycom.lookups import Choice
 from mondaycom.portfolio import PortfolioItem
 from mondaycom.sorting import Sorting
@@ -118,9 +127,6 @@ _PLANNING: list[planning.Snapshot] = []
 EVERYONE = "all"
 ALL_EPICS = "all"
 
-# "Do not filter on the portfolio at all", alongside config.DAM / config.NON_DAM.
-ANY_PORTFOLIO = ""
-PORTFOLIO_LABELS = ((ANY_PORTFOLIO, "Beide"), (DAM, "Alleen DAM"), (NON_DAM, "Alleen niet-DAM"))
 
 #: The app's name in the brand bar and the browser tab.
 APP_NAME = "Datalab sprintbord"
@@ -231,11 +237,6 @@ def epic_choices(items: list[bd.SprintItem]) -> list[Choice]:
 CSS = """
 #markdown { white-space: pre-wrap; }
 td.tight, th.tight { width: 1%; white-space: nowrap; }
-.htmx-request #spinner { display: inline; }
-#spinner { display: none; color: var(--muted); }
-/* One tight actions row rather than a full-width primary button. */
-.actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .6rem; }
-.actions button, .actions [role="button"] { width: auto; margin-bottom: 0; }
 .section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1.25rem; margin: 2rem 0 .6rem; }
 .section-head h3 { margin-bottom: 0; font-size: 1.2rem; }
 .section-head small { color: var(--muted); }
@@ -263,23 +264,10 @@ th button.sort:focus-visible { outline: 2px solid var(--accent); outline-offset:
 th button.sort .arrow { opacity: .45; font-size: .8em; }
 th button.sort[aria-sort] .arrow { opacity: 1; }
 
-/* The epic filters in one block: a grid, so they stay compact and line up as the
-   window changes, rather than rows of full-width Pico groups. */
-.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .1rem .8rem;
-           align-items: end; }
+/* The Sprint and table filters lead with a wide first field; the selection row does not. */
 .filters label:first-child { grid-column: span 2; }
-.filters label.switch { padding-bottom: .9rem; }
+.filters.selection label:first-child { grid-column: auto; }
 #epic-filters input, #epic-filters select { margin-bottom: .2rem; }
-/* A date field: the ISO text and a calendar button in one control. The native picker is
-   kept, invisible, under the button — only for the calendar it opens. */
-.date-field { position: relative; display: flex; gap: .35rem; align-items: stretch;
-              margin-bottom: var(--pico-spacing); }  /* the margin Pico gives every other input */
-.date-field input[type=text] { flex: 1; margin-bottom: 0; font-variant-numeric: tabular-nums; }
-.date-field input.date-picker { position: absolute; right: 0; bottom: 0; width: 1px; height: 1px; padding: 0;
-                                margin: 0; border: 0; opacity: 0; pointer-events: none; }
-.date-field button.date-button { width: auto; margin: 0; padding: 0 .65rem; background: var(--surface);
-                                 border: 1px solid var(--line); color: var(--ink); }
-.date-field button.date-button:hover { border-color: var(--accent); }
 .markdown-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
                  margin: 1.5rem 0 .4rem; }
 .markdown-head h3 { margin: 0; font-size: 1.1rem; }
@@ -316,11 +304,6 @@ table.portfolio td.lead { white-space: normal; min-width: 6rem; max-width: 8rem;
 
 /* The planning page: the window row, and the tables. The epic queue is the longest. */
 .back { margin: -.4rem 0 .8rem; font-size: .9rem; }
-#planning-filters .filters { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
-#planning-filters .filters label:first-child { grid-column: auto; }
-#planning-filters fieldset.layers { display: flex; flex-wrap: wrap; gap: .2rem 1rem; align-items: center;
-                                    margin: 0; padding-bottom: .9rem; border: 0; }
-#planning-filters fieldset.layers legend { font-size: .9rem; padding: 0; margin-bottom: .2rem; }
 #planning > h2 { margin-top: 1.5rem; }
 table.plan { min-width: 56rem; }
 table.plan td.split { color: var(--text-secondary); font-size: .8rem; white-space: nowrap; }
@@ -436,12 +419,14 @@ app, rt = fast_app(
         Script(WEERGAVE_JS),
         Style(theme.THEME_CSS),
         Style(chart.CHART_CSS),
+        Style(forms.CSS),
         Style(cards.CARDS_CSS),
         Style(CSS),
     ),
     # Light is the huisstijl default; the brand bar's switch makes it dark.
     htmlkw={"lang": "nl", "data-theme": "light"},
-    middleware=[Middleware(WeergaveMiddleware)],
+    # Only this app's own page — no DNS rebinding, nothing another website sends.
+    middleware=[*localonly.middleware(), Middleware(WeergaveMiddleware)],
     on_shutdown=[close_client],
 )
 
@@ -538,14 +523,6 @@ def person_select(selected: str = ASSIGNED_TO_ME) -> Any:
     )
 
 
-def portfolio_select(selected: str = ANY_PORTFOLIO) -> Any:
-    """DAM / non-DAM: whether the task's epic is linked to the IV Portfolio board."""
-    return Select(
-        *[Option(label, value=value, selected=value == selected) for value, label in PORTFOLIO_LABELS],
-        name="dam",
-    )
-
-
 # --- the stuck marker -------------------------------------------------------------------
 # "Blocked" is only actionable if you can reach the thing doing the blocking, so the
 # marker is a disclosure: closed it is one critical tag, open it lists the blockers as
@@ -634,61 +611,9 @@ THIS_QUARTER_PORTFOLIO = (
 )
 
 
-#: `this` is a date field's hidden native picker: write the picked date into the text
-#: field as ISO. Its own `change` then bubbles to the form, which asks for the section.
-DATE_PICKED_JS = "this.parentElement.querySelector('input[type=text]').value = this.value"
-
-
-def date_field(name: str, value: str, id: str | None = None) -> Any:
-    """A date as the page writes it everywhere, `2026-12-31`, with a calendar button.
-
-    Not a bare `<input type="date">`: that one *shows* its value in the browser's locale
-    (09/28/2026 on an English browser) whatever the page asks for. The text field is what
-    is submitted and must read `JJJJ-MM-DD` (the browser blocks the request otherwise);
-    the native picker sits hidden behind the button only for its calendar.
-    """
-    return Span(
-        Input(
-            type="text",
-            name=name,
-            value=value,
-            inputmode="numeric",
-            pattern=r"\d{4}-\d{2}-\d{2}",
-            placeholder="JJJJ-MM-DD",
-            title="Een datum als JJJJ-MM-DD, bijvoorbeeld 2026-12-31",
-            autocomplete="off",
-        ),
-        Input(type="date", value=value, tabindex="-1", aria_hidden="true", cls="date-picker", onchange=DATE_PICKED_JS),
-        Button(
-            "📅",
-            type="button",
-            cls="date-button",
-            aria_label="Kies een datum in de kalender",
-            onclick="this.parentElement.querySelector('.date-picker').showPicker()",
-        ),
-        cls="date-field",
-        id=id,
-    )
-
-
 def sprint_end_field(end: str) -> Any:
     """The sprint's end date. It shows the window actually in use, not a blank."""
     return date_field("end", end, id="sprint-end")
-
-
-def refresh_button(route: Any, form: str, target: str) -> Any:
-    """Re-read the page's boards: `route` with `refresh` on it, sent with the `form`'s
-    filters so the fresh read comes back in the same slice, swapped over `target`."""
-    return Button(
-        "Opnieuw ophalen van monday.com",
-        type="button",
-        cls="secondary outline",
-        hx_get=route,
-        hx_include=form,
-        hx_target=target,
-        hx_swap="outerHTML",
-        hx_indicator=form,
-    )
 
 
 def sprint_controls(
@@ -1330,11 +1255,6 @@ BUCKETS_NL = {
 }
 
 
-def switch(name: str, label: str, checked: bool, title: str) -> Any:
-    """A filter that is on or off, with its rule in the hover."""
-    return Label(Input(type="checkbox", name=name, role="switch", checked=checked), label, cls="switch", title=title)
-
-
 def portfolio_link(epic: Epic) -> Any:
     """The epic's IV Portfolio item, as a way into the Portfolio page rather than as text."""
     if not epic.portfolio_ids:
@@ -1958,50 +1878,12 @@ def planning_cache(refresh: bool = False) -> planning.Snapshot:
     return _PLANNING[0]
 
 
-def planning_date_fields(sprint_end: str, end: str) -> Any:
-    """The window's two dates: the end of the current sprint (the plan starts the day after)
-    and the end of the quarter. They show the window in use, so they come back out of band."""
-    return Div(
-        Label("Einde sprint", date_field("sprint_end", sprint_end)),
-        Label("Einde kwartaal", date_field("end", end)),
-        id="planning-dates",
-        style="display: contents",
-    )
-
-
-DAM_HELP = (
-    "DAM: epics die gekoppeld zijn aan een item op het IV Portfolio-bord. Niet-DAM: epics zonder die koppeling. "
-    "De bezetting, de prognose en de checks op de huidige en de volgende sprint volgen allemaal dit filter."
-)
-
-
 def planning_filters(sprint_end: str, end: str, layers: tuple[str, ...], dam: str, this_quarter: bool) -> Any:
     """The window, the layers, the DAM half and "This quarter". Together they are the
     selection: only the epics they pick take capacity, so every number below answers
     "can we do exactly this?"."""
     return Form(
-        Div(
-            planning_date_fields(sprint_end, end),
-            Label("Portfolio", portfolio_select(dam), title=DAM_HELP),
-            Fieldset(
-                Legend("Plannen"),
-                *[
-                    Label(
-                        Input(type="checkbox", name="layer", value=key, checked=key in layers),
-                        label,
-                        title=planning.LAYER_HELP_NL[key],
-                    )
-                    for key, label in planning.LAYERS_NL.items()
-                ],
-                Label(
-                    Input(type="checkbox", name="this_quarter", role="switch", checked=this_quarter),
-                    "Dit kwartaal",
-                    title=planning.THIS_QUARTER_HELP_NL,
-                ),
-                cls="layers",
-            ),
-            cls="filters",
-        ),
+        selection_fields(sprint_end, end, layers, dam, this_quarter),
         Div(
             Button("Toepassen", type="submit"),
             A("Herstellen", href=planning_page, role="button", cls="secondary outline"),
@@ -2022,12 +1904,6 @@ def planning_filters(sprint_end: str, end: str, layers: tuple[str, ...], dam: st
 
 def _sprints(value: float | None) -> str:
     return "niemand" if value is None else f"{value:.1f}"
-
-
-def dam_label(dam: str) -> str:
-    """The filter's label ("Alleen DAM" / "Alleen niet-DAM"), or empty when it is off — or set
-    to a value it does not know, which every DAM check treats as both (`config.keeps_dam`)."""
-    return next((label for value, label in PORTFOLIO_LABELS if value == dam and value), "")
 
 
 def selection_text(p: planning.Plan) -> str:

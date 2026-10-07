@@ -211,6 +211,7 @@ def board_people(board: Board = SPRINT_BOARD) -> str:
                 subscribers {{
                     id
                     name
+                    email
                     photo_url {{ thumb_small }}
                 }}
             }}
@@ -386,9 +387,9 @@ def planning_epics(board: Board = EPIC_BOARD, cursor: str | None = None) -> str:
 
     The group is the planning layer (Actief / Bespreken / Backlog), which is why this is
     not `epic_rows`: the overview pages have no use for it. The portfolio link is the DAM
-    filter.
+    filter; the project number is what the alignment (`align.py`) links the kwartaalplanbord on.
     """
-    columns = json.dumps([board.column(a) for a in ("status", "priority", "due_date", "portfolio")])
+    columns = json.dumps([board.column(a) for a in ("status", "priority", "due_date", "portfolio", "prj_nr")])
     return dedent(f"""
         query {{
             boards(ids: [{board.id}]) {{
@@ -527,3 +528,16 @@ def me() -> str:
             }
         }
     """).strip()
+
+
+# --- the alignment app (`align.py`) — temporary ----------------------------------------
+
+#: Set several columns on one item. The values travel as a variable, so nothing a
+#: caller passes is ever spliced into the query text.
+CHANGE_COLUMNS = dedent("""
+    mutation ($board: ID!, $item: ID!, $values: JSON!) {
+        change_multiple_column_values(board_id: $board, item_id: $item, column_values: $values) {
+            id
+        }
+    }
+""").strip()

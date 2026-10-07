@@ -56,6 +56,9 @@ uv run monday planning --layer all --this-quarter      # only epics due by the q
 uv run monday project DPR-223        # write an Obsidian project note for one epic
 uv run monday project 223 --stdout   # same epic, printed instead of written
 uv run monday project 2617136005 --out . --force   # by item id, into this directory
+uv run monday align-splits           # dry run: distribution splits from the kwartaalplanbord
+uv run monday align-splits --apply   # write them (backs up first; --restore <backup> undoes)
+uv run monday align-web              # the temporary alignment app, on http://127.0.0.1:5002
 uv run monday columns --board epic   # column ids (sprint|done|epic|portfolio|distribution|capacity)
 ./scripts/sprint-tasks.sh --copy     # same, plus clipboard
 uv run poe check                     # ruff format --diff, ruff check, mypy
@@ -63,7 +66,10 @@ uv run poe test                      # pytest
 uv run poe format                    # ruff format
 uv run monday web                    # web UI, live-reloading, on http://127.0.0.1:5001
 uv run monday web --no-reload        # same, without the reloader
-./webview.sh                         # the same `monday web`, from anywhere; flags pass through
+./webview.sh                         # `monday web` in the background, from anywhere; flags pass through
+./webview-stop.sh                    # stop it
+./webalign.sh                        # `monday align-web` in the background (port 5002)
+./webalign-stop.sh                   # stop it
 ./scripts/sync-docs.sh               # refresh docs/ (or: sync-docs.sh fasthtml)
 ```
 
@@ -87,11 +93,17 @@ overrides where `monday project` writes.
 | `src/mondaycom/sorting.py` | The one-string sort spec both tables share (`Sorting`, `label_key`) |
 | `src/mondaycom/chart.py` | The burndown SVG, the palette and tone tokens, status/priority tags, avatars, the battery meter, the table view, Dutch dates (`datum`) |
 | `src/mondaycom/theme.py` | The huisstijl: Pico variable overrides, the brand bar, the tabs, the view switch's look, the footer, the light/dark toggle |
+| `src/mondaycom/localonly.py` | The guard both web apps put in front of every route: their own host name only, nothing another website sends |
+| `src/mondaycom/forms.py` | Filter controls both web apps share: date field, portfolio select, switches, the Planning selection row (`selection_fields`) and their CSS |
 | `src/mondaycom/cards.py` | The cards view's pieces and CSS: card, head, grid, pill, sprint strip; `TABEL` / `KAARTEN` |
+| `src/mondaycom/align.py` | **Temporary.** The kwartaalplanbord dump vs monday.com: DPR links, splits, decisions and actions |
+| `src/mondaycom/align_export.py` | **Temporary.** Its decisions as the user's own copy: xlsx / ods / csv / json, the folder rules, autosave |
+| `src/mondaycom/align_web.py` | **Temporary.** Its own FastHTML app (port 5002), not a page of `monday web` |
 | `src/mondaycom/cli.py` | `monday` argparse entry point |
 | `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Features (`/epics`), Portfolio and Planning pages, their rows and cards, caches |
 | `scripts/` | Bash wrappers so tools run from anywhere |
-| `webview.sh` | `uv run monday web` from anywhere — the one wrapper in the repo root |
+| `webview.sh`, `webalign.sh` | Start `monday web` / `monday align-web` in the background, from anywhere; `*-stop.sh` stops them |
+| `scripts/serve.sh` | What those four call: `setsid` start with a pid/port/log in `.run/`, stop by process group, then by port |
 | `docs/Project.md` | The vault's project template, as Templater writes it — `project.py` renders it, and ships it in the wheel |
 | `docs/monday-api/` | **Offline mirror of the monday.com API docs — read this first** |
 | `docs/fasthtml/` | **Offline mirror of the FastHTML docs — read this first** |
@@ -167,7 +179,15 @@ like FastAPI and is not. The things that cost time here:
   that is when the route captures the function. Drop it when fasthtml fixes it upstream.
 - **`serve()` is for `python main.py`** and inspects `__main__` itself. This repo
   runs `uvicorn.run` from `web.run()` so it can be a CLI subcommand instead.
-- The UI binds to **127.0.0.1 by default** — the process holds the API token.
+- The UI binds to **127.0.0.1 by default** — the process holds the API token. That keeps out
+  other machines, not other websites in the same browser, so **both apps run
+  `localonly.middleware()`**: they answer only to `127.0.0.1`/`localhost` (plus the `--host`
+  address, via `MONDAY_HOST` set by the CLI before import) — no DNS rebinding — and refuse a
+  request the browser marks cross-site (following a *link* to a page is allowed), a POST from
+  a foreign `Origin`, and a POST without `HX-Request`. A route that changes something must be
+  `@app.post`: a bare `@rt` answers GET too, which an `<img>` can send. Tests use
+  `TestClient(app, base_url="http://127.0.0.1")`, and a socket needs a full
+  `ws://127.0.0.1/…` URL — the test client's default host, `testserver`, is refused.
 
 ## Burndown
 
@@ -552,6 +572,53 @@ with Jelle on 2026-09-28, 2026-09-30 and 2026-10-01; ask before changing one.
   the layers, what is counted and the load formula, with the selection's own dates and a
   worked example on the heaviest discipline. The layer wording lives once, in
   `planning.LAYER_HELP` — change the rule, change the text there.
+
+## Alignment with the kwartaalplanbord (temporary)
+
+The team planned Q4 on the Kwartaalplanbord (`docs/tmp/Kwartaalplanbord.html`); its database
+dump is `docs/tmp/kwartaalplanbord_database_compleet.json`. `align.py` and its own app
+`align_web.py` exist to make that plan and monday.com agree, and go when they do. **Keep them
+out of `web.py`** — Jelle asked for a separate, temporary thing (2026-10-07).
+
+- **Linked on the DPR number** (dump `dpr` ↔ epic board `prj_nr`), never on the name. The
+  dump's disciplines map `mod`→DE, `vis`→DB, `ds`→DS, `ia`→PO/AT (its own legend: Vis, DE,
+  AT, DS). A DPR on several dump epics sums them; a link is changed in the app, not the dump.
+- **The split is the dump's Q4 points per discipline, as whole percentages adding up to 100**
+  (`align.split_from`, largest remainder). `monday align-splits --apply` wrote them to all 22
+  linked Epics-STP-distribution rows on 2026-10-07, replacing the 35/30/25/10 default; the old
+  values are in `docs/tmp/verdeling_backup_*.json`. Personeellasten was unlinked from DPR-227
+  first (it shared the number with Maandrapportage MT) — an open action in the app.
+- The comparison is against **STP-TODO**, the Planning page's number; a row is marked past 10%
+  of monday.com's figure.
+- **The app's top filter row is the Planning page's** — the same `forms.selection_fields` —
+  and selects monday.com epics by the same rule, `PlanEpic.selected`; a `MondayEpic` *is* the
+  Planning page's `PlanEpic` plus its split and points, read by `planning.fetch`. `align_web`
+  never imports `web`.
+  Rows only monday.com has are the selected epics with STP-TODO left. A linked epic the
+  selection leaves out is hidden by default and *named* above the table ("ook buiten de
+  selectie" shows it), so the monday.com totals equal the Planning page's. A board epic linked
+  to nothing has no layer: only the DAM filter applies, on its portfolio ("Niet DAM" or none is
+  non-DAM).
+- **Decisions and actions live in `docs/tmp/afstemming.json`** (gitignored, like all of
+  `docs/tmp`), never on monday.com. The app re-reads the dump and that file per request.
+- **It writes to monday.com and to disk, so the `localonly.py` guard matters most here** (see
+  "FastHTML — what bites you"): every route that changes something is `@app.post` and goes
+  through htmx, and `verdeling` writes only when `Row.split_differs`, whatever the client says.
+- **The user's own copy is `align_export.py`**: the settings page (`/opslaan`, reached by the
+  "Opslaan…" button in the page head — **not a tab**) writes
+  `afstemming-kwartaalplanning.<xlsx|ods|csv|json>` to a folder they choose — refused inside
+  the repository, a `C:\…` path read as `/mnt/c/…`, picked in the **Bladeren…** dialog
+  (`align_export.browse` / `make_folder`, routes `mappen` and the POST-only `map_maken`: this
+  machine's folders, since the app writes the file; a missing folder opens at its nearest
+  parent with the name ready to make; the chosen path rides in a `data-folder` attribute, never
+  in a script) — by hand or by autosave (`Saving`, kept in the state file). **The autosave
+  switch stores itself** (`autosave_control`, POST `autosave_zetten`, on the Vergelijking
+  page's head and the settings page): it was once a field of the settings form, which only
+  saved on submit, so it looked on and was never stored. It waits for a folder, and turning
+  it on saves at once when there are unsaved changes. "Unsaved" is `State.fingerprint` (the decisions, links and actions, not
+  the save settings) differing from the one last written; a download counts as saved. The
+  banner on every page asks `/opslag_status` on load, every 60s, and on the `gewijzigd` event
+  every changing route sends — and that poll is also when a due autosave writes.
 
 ## Project notes
 

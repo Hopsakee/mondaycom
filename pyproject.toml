@@ -5,6 +5,8 @@ description = "Command-line tools for working with monday.com from Jelle's termi
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "odfpy>=1.4.1",
+    "openpyxl>=3.1.5",
     "python-dotenv>=1.0.1",
     "python-fasthtml>=0.14.13",
     "requests>=2.32.3",
@@ -34,6 +36,7 @@ dev = [
     "pre-commit>=4.6.2",
     "pytest>=8.3.3",
     "ruff>=0.6.8",
+    "types-openpyxl>=3.1.5.20260827",
     "types-requests>=2.32.0",
 ]
 # Only needed to open the frozen exploration notebooks under nbs/legacy/.
@@ -67,12 +70,12 @@ allow_redefinition = true
 
 # FastHTML and its Starlette-flavoured stack ship no py.typed marker.
 [[tool.mypy.overrides]]
-module = ["fasthtml.*", "uvicorn.*"]
+module = ["fasthtml.*", "uvicorn.*", "odf.*"]
 ignore_missing_imports = true
 
 # `@rt` therefore reads as an untyped decorator, which would flag every route.
 [[tool.mypy.overrides]]
-module = "mondaycom.web"
+module = ["mondaycom.web", "mondaycom.align_web"]
 disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]

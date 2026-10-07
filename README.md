@@ -5,6 +5,30 @@ pulling sprint work out of monday.com and into a terminal or an Obsidian vault.
 Plus a small local web page that does the same with a date picker and a copy
 button.
 
+## Quick start
+
+Most of the time you only need one of the two web apps. Each starts in the background, so you
+get your terminal back, and works from any directory:
+
+```bash
+./webview.sh          # the sprint board: Sprint, Features, Portfolio, Planning → http://127.0.0.1:5001
+./webview-stop.sh     # stop it
+
+./webalign.sh         # the kwartaalplanbord next to monday.com → http://127.0.0.1:5002
+./webalign-stop.sh    # stop it
+```
+
+Options pass through (`./webview.sh --port 5003`, `./webview.sh --no-reload`,
+`./webalign.sh --reload`); the stop script remembers the port. Starting an app that already
+runs just tells you where it is. The output goes to `.run/webview.log` and
+`.run/webalign.log` — look there when a page does not load. The first time, do the setup
+below.
+
+What you enter in **webalign** is stored locally in `docs/tmp/afstemming.json` — not in git,
+and not backed up. Save a copy to a folder of your own (Excel, Calc, CSV or JSON, optionally
+automatically) from its **Opslaan…** button; see
+[Alignment with the kwartaalplanbord](#alignment-with-the-kwartaalplanbord-temporary).
+
 ## Setup
 
 ```bash
@@ -82,6 +106,9 @@ Output is [Obsidian Tasks](https://publish.obsidian.md/tasks/) syntax:
 ```
 
 ## Web interface
+
+`./webview.sh` and `./webview-stop.sh` (see Quick start) run this in the background. In the
+foreground, with the log in your terminal:
 
 ```bash
 uv run monday web             # http://127.0.0.1:5001
@@ -218,3 +245,31 @@ overhead. A person's capacity per sprint is `STP × available% × (1 − overhea
 - Only epics with a linked row and a split that adds up to 100% are counted. Everything
   else is listed under the queue as something to fix on monday.com — nothing is matched
   by name and no default split is assumed.
+
+### Alignment with the kwartaalplanbord (temporary)
+
+> **Where your changes go.** Everything you enter in the alignment app — wanted totals,
+> explanations, re-linked DPRs, actions — is stored **locally in
+> `docs/tmp/afstemming.json`**. `docs/tmp/` is ignored by git, so nothing reaches the public
+> repository, but nothing backs it up either. Keep your own copy: the **Opslaan…** button
+> opens the settings page, where you pick Excel (`.xlsx`), LibreOffice Calc (`.ods`), CSV or JSON and a folder outside the
+> repository — **Bladeren…** opens a folder picker that can also make the folder (typing a
+> path, or a Windows one such as `C:\Users\you\OneDrive\…`, works too) — then save — by
+> hand, or with **automatic saving** every 1, 5 (default), 15 or 30 minutes — a switch at
+> the top of the Vergelijking page that is stored the moment you flip it. A download in
+> any of the four formats is there as well. As long as there are changes no copy holds yet,
+> every page shows a warning at the top.
+
+`./webalign.sh` (or `uv run monday align-web`) serves a separate app on port 5002 that puts
+the Q4 plan from the Kwartaalplanbord (`docs/tmp/kwartaalplanbord_database_compleet.json`)
+next to monday.com, linked on the DPR number. Per epic it shows both STP totals and splits,
+marks a difference of more than 10% of monday.com's STP-TODO, and keeps what you decide —
+the total you want, where to change it, why — and actions per person, with the message to
+send them. The top filter row is the Planning page's. Decisions are stored in
+`docs/tmp/afstemming.json`.
+
+```bash
+uv run monday align-splits            # dry run: set the distribution splits to the board's
+uv run monday align-splits --apply    # write them, after a backup
+uv run monday align-splits --restore docs/tmp/verdeling_backup_<stamp>.json   # undo
+```

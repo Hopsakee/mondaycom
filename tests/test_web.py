@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 from fasthtml.common import to_xml
-from starlette.testclient import TestClient
+from starlette.testclient import TestClient, WebSocketDenialResponse
 
 from builders import epic
 from mondaycom import burndown as bd
@@ -117,7 +117,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     # Pre-filled, so no route goes looking for the epic board either.
     web._EPICS[:] = EPICS
     web._PORTFOLIO[:] = PORTFOLIO
-    yield TestClient(web.app)
+    yield TestClient(web.app, base_url="http://127.0.0.1")
     web._TASKS.clear()
     web._PEOPLE.clear()
     web._EPICS.clear()
@@ -983,8 +983,32 @@ def test_an_unknown_item_is_a_message_not_a_500(client: TestClient) -> None:
 
 def test_closing_the_live_reload_socket_is_not_an_asgi_error(client: TestClient) -> None:
     """fasthtml's own handler receives once past the disconnect and raises RuntimeError."""
-    with client.websocket_connect("/live-reload"):
+    # A full URL: the test client opens sockets on "testserver", which the host check refuses.
+    with client.websocket_connect("ws://127.0.0.1/live-reload"):
         pass
+
+
+def test_only_the_apps_own_page_is_answered(client: TestClient) -> None:
+    """The guard in `localonly.py`: no DNS rebinding, no cross-site requests — but a link
+    to a page, followed from another site, still opens it."""
+    assert client.get("/healthz-none", headers={"Host": "evil.example"}).status_code == 400
+    with pytest.raises(WebSocketDenialResponse):
+        client.websocket_connect("/live-reload").__enter__()  # host "testserver": refused
+    embedded = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"}
+    assert client.get("/epics", headers=embedded).status_code == 403
+    followed = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
+    assert client.get("/epics", headers=followed).status_code == 200
+    assert client.post("/epics", headers={"Origin": "https://evil.example", **HTMX}).status_code == 403
+    assert client.post("/epics").status_code == 403  # no HX-Request: not the app's own page
+
+
+def test_the_host_cli_flag_is_answered_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mondaycom import localonly
+
+    monkeypatch.setenv("MONDAY_HOST", "192.168.1.20")
+    assert localonly.allowed_hosts() == ["127.0.0.1", "localhost", "192.168.1.20"]
+    monkeypatch.setenv("MONDAY_HOST", "0.0.0.0")
+    assert localonly.allowed_hosts() == ["127.0.0.1", "localhost"]
 
 
 # --- the planning page ------------------------------------------------------------------
@@ -1146,7 +1170,7 @@ def test_every_route_shares_one_client_rather_than_a_session_each(
 
 def test_the_shared_client_is_closed_when_the_server_shuts_down(client: TestClient) -> None:
     shared = web.monday_client()
-    with TestClient(web.app):
+    with TestClient(web.app, base_url="http://127.0.0.1"):
         pass  # entering and leaving runs the app's startup and shutdown
     assert shared.closed
 
