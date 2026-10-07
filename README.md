@@ -5,6 +5,30 @@ pulling sprint work out of monday.com and into a terminal or an Obsidian vault.
 Plus a small local web page that does the same with a date picker and a copy
 button.
 
+## Quick start
+
+Most of the time you only need one of the two web apps. Each starts in the background, so you
+get your terminal back, and works from any directory:
+
+```bash
+./webview.sh          # the sprint board: Sprint, Features, Portfolio, Planning → http://127.0.0.1:5001
+./webview-stop.sh     # stop it
+
+./webalign.sh         # the kwartaalplanbord next to monday.com → http://127.0.0.1:5002
+./webalign-stop.sh    # stop it
+```
+
+Options pass through (`./webview.sh --port 5003`, `./webview.sh --no-reload`,
+`./webalign.sh --reload`); the stop script remembers the port. Starting an app that already
+runs just tells you where it is. The output goes to `.run/webview.log` and
+`.run/webalign.log` — look there when a page does not load. The first time, do the setup
+below.
+
+What you enter in **webalign** is stored locally in `docs/tmp/afstemming.json` — not in git,
+and not backed up. Save a copy to a folder of your own (Excel, Calc, CSV or JSON, optionally
+automatically) from its **Opslaan…** button; see
+[Alignment with the kwartaalplanbord](#alignment-with-the-kwartaalplanbord-temporary).
+
 ## Setup
 
 ```bash
@@ -82,6 +106,9 @@ Output is [Obsidian Tasks](https://publish.obsidian.md/tasks/) syntax:
 ```
 
 ## Web interface
+
+`./webview.sh` and `./webview-stop.sh` (see Quick start) run this in the background. In the
+foreground, with the log in your terminal:
 
 ```bash
 uv run monday web             # http://127.0.0.1:5001

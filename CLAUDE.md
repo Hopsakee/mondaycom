@@ -66,7 +66,10 @@ uv run poe test                      # pytest
 uv run poe format                    # ruff format
 uv run monday web                    # web UI, live-reloading, on http://127.0.0.1:5001
 uv run monday web --no-reload        # same, without the reloader
-./webview.sh                         # the same `monday web`, from anywhere; flags pass through
+./webview.sh                         # `monday web` in the background, from anywhere; flags pass through
+./webview-stop.sh                    # stop it
+./webalign.sh                        # `monday align-web` in the background (port 5002)
+./webalign-stop.sh                   # stop it
 ./scripts/sync-docs.sh               # refresh docs/ (or: sync-docs.sh fasthtml)
 ```
 
@@ -99,7 +102,8 @@ overrides where `monday project` writes.
 | `src/mondaycom/cli.py` | `monday` argparse entry point |
 | `src/mondaycom/web.py` | FastHTML web UI — the Sprint, Features (`/epics`), Portfolio and Planning pages, their rows and cards, caches |
 | `scripts/` | Bash wrappers so tools run from anywhere |
-| `webview.sh` | `uv run monday web` from anywhere — the one wrapper in the repo root |
+| `webview.sh`, `webalign.sh` | Start `monday web` / `monday align-web` in the background, from anywhere; `*-stop.sh` stops them |
+| `scripts/serve.sh` | What those four call: `setsid` start with a pid/port/log in `.run/`, stop by process group, then by port |
 | `docs/Project.md` | The vault's project template, as Templater writes it — `project.py` renders it, and ships it in the wheel |
 | `docs/monday-api/` | **Offline mirror of the monday.com API docs — read this first** |
 | `docs/fasthtml/` | **Offline mirror of the FastHTML docs — read this first** |
