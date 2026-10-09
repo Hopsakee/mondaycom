@@ -605,18 +605,21 @@ out of `web.py`** — Jelle asked for a separate, temporary thing (2026-10-07).
   "FastHTML — what bites you"): every route that changes something is `@app.post` and goes
   through htmx, and `verdeling` writes only when `Row.split_differs`, whatever the client says.
 - **The user's own copy is `align_export.py`**: the settings page (`/opslaan`, reached by the
-  "Opslaan…" button in the page head — **not a tab**) writes
+  "Opslaan/Openen" button in the blue brand bar, `theme.brandbar(app, *tools)` — **not a tab**) writes
   `afstemming-kwartaalplanning.<xlsx|ods|csv|json>` to a folder they choose — refused inside
   the repository, a `C:\…` path read as `/mnt/c/…`, picked in the **Bladeren…** dialog
   (`align_export.browse` / `make_folder`, routes `mappen` and the POST-only `map_maken`: this
   machine's folders, since the app writes the file; a missing folder opens at its nearest
   parent with the name ready to make; the chosen path rides in a `data-folder` attribute, never
   in a script) — by hand or by autosave (`Saving`, kept in the state file). **The autosave
-  switch stores itself** (`autosave_control`, POST `autosave_zetten`, on the Vergelijking
-  page's head and the settings page): it was once a field of the settings form, which only
+  switch stores itself** (`autosave_control`, POST `autosave_zetten`, on the settings page
+  only): it was once a field of the settings form, which only
   saved on submit, so it looked on and was never stored. It waits for a folder, and turning
-  it on saves at once when there are unsaved changes. "Unsaved" is `State.fingerprint` (the decisions, links and actions, not
-  the save settings) differing from the one last written; a download counts as saved. The
+  it on saves at once when there are unsaved changes. **A copy loads back** in the same page's
+  "Een kopie terugzetten" (`align_export.load_copy`; POST `laden`, an upload, and `laden_uit_map`,
+  which takes a format, never a path): it replaces the decisions, actions and links after
+  writing the current ones to `afstemming_voor-laden_<stamp>.json`; a CSV brings the decisions only. "Unsaved" is `State.fingerprint` (the decisions, links and actions, not
+  the save settings) differing from the one last written. There is no download: a copy goes to a folder. The
   banner on every page asks `/opslag_status` on load, every 60s, and on the `gewijzigd` event
   every changing route sends — and that poll is also when a due autosave writes.
 

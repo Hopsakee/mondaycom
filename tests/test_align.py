@@ -177,7 +177,7 @@ def test_split_changes_and_backup_then_restore(tmp_path: Path) -> None:
 
 def test_state_round_trip(tmp_path: Path) -> None:
     state = align.State(path=tmp_path / "s.json")
-    state.decisions["DPR-227"] = align.Decision(wanted=6, where="monday", note="zo")
+    state.decisions["DPR-227"] = align.Decision(wanted=6, note="zo")
     action = state.add_action("DPR-227", " Navragen ", "Agnes")
     state.set_status(action.id, "verstuurd")
     state.save()
@@ -195,7 +195,7 @@ def test_message_carries_the_figures_and_the_note() -> None:
     text = align.message("Agnes Dubbink", [action], rows, state, "Jelle de Jong")
     assert text.startswith("Hoi Agnes,")
     assert "Kwartaalplanbord 3 STP · monday.com 9 STP" in text
-    assert "Toelichting: Dubbel geteld?" in text
+    assert "Definition of Done: Dubbel geteld?" in text
 
 
 def test_monday_epic_is_the_planning_epic_with_its_project_number() -> None:
@@ -260,14 +260,47 @@ def test_the_page_carries_the_planning_filter_row(app: TestClient) -> None:
 
 
 def test_saving_a_decision_and_adding_an_action(app: TestClient, tmp_path: Path) -> None:
-    reply = app.post("/bewaar", data={"key": "DPR-227", "wanted": "7,5", "where": "monday", "note": "omdat"})
+    reply = app.post("/bewaar", data={"key": "DPR-227", "wanted": "7,5", "note": "omdat"})
     assert "monday.com -1.5" in reply.text and "hx-swap-oob" in reply.text
-    cell = app.post("/actie", data={"key": "DPR-227", "tekst": "Vragen", "wie": "Agnes Dubbink"}).text
-    assert "Vragen" in cell and 'id="acties-DPR-227"' in cell
+    assert "aanpassen" in reply.text  # where to change it, deduced from the wanted total
+    assert app.post("/actie", data={"key": "DPR-227", "tekst": "Vragen", "wie": "Agnes Dubbink"}).headers["HX-Refresh"]
     state = align.State.load(tmp_path / "state.json")
     assert state.decision("DPR-227").wanted == 7.5
     page = app.get("/acties").text
     assert "agnes@example.org" in page and "mailto:" in page and "Hoi Agnes," in page
+    one = app.get("/acties?epic=DPR-227").text
+    assert "Vragen" in one and "Nieuwe actie voor DPR-227" in one
+
+
+def test_the_actions_column_counts_open_actions(tmp_path: Path) -> None:
+    from fasthtml.common import to_xml
+
+    from mondaycom import align_web
+
+    state = align.State(path=tmp_path / "state.json")
+    assert align_web.actions_count("DPR-227", state) == "-"
+    action = state.add_action("DPR-227", "Navragen")
+    state.add_action("DPR-227", "Nog iets")
+    assert align_web.actions_count("DPR-227", state) == "2"
+    state.set_status(action.id, "klaar")
+    assert align_web.actions_count("DPR-227", state) == "1"
+    for a in state.actions:
+        state.set_status(a.id, "klaar")
+    assert align_web.actions_count("DPR-227", state) == "0"
+    assert "/acties?epic=DPR-227" in to_xml(align_web.actions_cell("DPR-227", state))
+
+
+def test_where_follows_from_the_wanted_total() -> None:
+    [row] = [r for r in align.compare(align.parse_board(DUMP), monday(), align.State()) if r.key == "DPR-227"]
+    assert align.where(row, align.Decision()) == ""
+    assert align.where(row, align.Decision(wanted=row.board_total)) in {"monday", "geen"}
+    assert align.where(row, align.Decision(wanted=row.board_total + row.monday_total + 1)) == "beide"
+
+
+def test_an_old_state_file_with_where_still_loads(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.write_text('{"decisions": {"k": {"wanted": 3, "where": "monday", "note": "x"}}}', encoding="utf-8")
+    assert align.State.load(path).decision("k") == align.Decision(wanted=3, note="x")
 
 
 def test_relinking_an_epic(app: TestClient, tmp_path: Path) -> None:
@@ -289,7 +322,7 @@ def test_export_is_markdown(app: TestClient) -> None:
 
 def saved_state(tmp_path: Path) -> tuple[align.State, list[align.Row]]:
     state = align.State(links={"e5": ""}, path=tmp_path / "state.json")
-    state.decisions["DPR-227"] = align.Decision(wanted=6, where="monday", note="Dubbel; zie actie")
+    state.decisions["DPR-227"] = align.Decision(wanted=6, note="Dubbel; zie actie")
     state.add_action("DPR-227", "Navragen", "Agnes Dubbink")
     rows = align.compare(align.parse_board(DUMP), monday(), state)
     return state, rows
@@ -305,17 +338,17 @@ def test_every_format_reads_back(tmp_path: Path) -> None:
 
     state, rows = saved_state(tmp_path)
     book = load_workbook(io.BytesIO(align_export.render("xlsx", rows, state)))
-    assert book.sheetnames == ["Afstemming", "Acties"]
+    assert book.sheetnames == ["Afstemming", "Acties", "Koppelingen"]
     sheet = book["Afstemming"]
     head = [c.value for c in sheet[1]]
     line = next(r for r in sheet.iter_rows(min_row=2, values_only=True) if r[0] == "DPR-227")
-    assert line[head.index("Gewenst STP")] == 6 and line[head.index("Toelichting")] == "Dubbel; zie actie"
+    assert line[head.index("Gewenst STP")] == 6 and line[head.index("Definition of Done")] == "Dubbel; zie actie"
     assert line[head.index("Database STP")] == 3 and line[head.index("monday.com STP-TODO")] == 9
     assert book["Acties"]["D2"].value == "Navragen"
 
     (tmp_path / "x.ods").write_bytes(align_export.render("ods", rows, state))
     names = [t.getAttribute("name") for t in load(str(tmp_path / "x.ods")).spreadsheet.getElementsByType(Table)]
-    assert names == ["Afstemming", "Acties"]
+    assert names == ["Afstemming", "Acties", "Koppelingen"]
 
     text = align_export.render("csv", rows, state).decode("utf-8")
     assert text.startswith("\ufeffDPR;")
@@ -402,14 +435,9 @@ def test_a_bad_folder_is_said_not_raised(app: TestClient, tmp_path: Path) -> Non
     assert "Opslaan lukte niet" in app.get("/opslag_status").text
 
 
-def test_a_download_counts_as_saved(app: TestClient) -> None:
-    app.post("/bewaar", data={"key": "DPR-227", "note": "x"})
-    reply = app.get("/download?fmt=ods")
-    assert reply.headers["content-type"].startswith("application/vnd.oasis.opendocument.spreadsheet")
-    assert "attachment" in reply.headers["content-disposition"]
-    assert "Alles is opgeslagen" in app.get("/opslag_status").text
-    assert app.get("/download?fmt=pdf").status_code == 400
-    assert "Opslaan" in app.get("/opslaan").text
+def test_there_is_no_download(app: TestClient) -> None:
+    assert app.get("/download?fmt=ods").status_code == 404
+    assert "download" not in app.get("/opslaan").text.lower()
 
 
 # --- only the app itself -------------------------------------------------------------------
@@ -430,7 +458,7 @@ def test_a_change_needs_post_and_the_apps_own_page(app: TestClient, tmp_path: Pa
     assert app.post("/bewaar", data=data, headers={"HX-Request": ""}).status_code == 403
     assert app.post("/bewaar", data=data, headers={"Origin": "https://evil.example"}).status_code == 403
     assert app.post("/bewaar", data=data, headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
-    assert app.get("/download?fmt=json", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+    assert app.get("/mappen", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
     assert align.State.load(tmp_path / "state.json").decision("DPR-227").note == ""
     # The app's own page passes: same origin, through htmx.
     own = {"Origin": "http://127.0.0.1", "Sec-Fetch-Site": "same-origin"}
@@ -532,18 +560,18 @@ def test_the_switch_stays_on_once_turned_on(app: TestClient, tmp_path: Path) -> 
     out = tmp_path / "eigen"
     out.mkdir()
     app.post("/opslaan_instellen", data={"format": "json", "folder": str(out)})
-    assert not checked(app.get("/").text)
+    assert not checked(app.get("/opslaan").text)
     reply = app.post("/autosave_zetten", data={"autosave": "on", "minutes": "15"})
     assert checked(reply.text) and reply.headers["HX-Trigger"] == "gewijzigd"
-    # Stored, so every page draws it on — the main page and the settings page alike.
-    assert checked(app.get("/").text) and checked(app.get("/opslaan").text)
+    # Stored, so the settings page draws it on when it is opened again.
+    assert checked(app.get("/opslaan").text)
     saving = align.State.load(tmp_path / "state.json").saving
     assert saving.autosave and saving.minutes == 15
     # Saving the folder again leaves it on: the form does not carry the switch.
     app.post("/opslaan_instellen", data={"format": "csv", "folder": str(out)})
     assert checked(app.get("/opslaan").text)
     app.post("/autosave_zetten", data={"minutes": "15"})  # an unticked checkbox sends nothing
-    assert not checked(app.get("/").text)
+    assert not checked(app.get("/opslaan").text)
 
 
 def test_the_switch_waits_for_a_folder(app: TestClient, tmp_path: Path) -> None:
@@ -563,9 +591,85 @@ def test_turning_it_on_saves_what_is_unsaved(app: TestClient, tmp_path: Path) ->
     assert "na de laatste kopie" in (out / "afstemming-kwartaalplanning.json").read_text()
 
 
-def test_saving_is_a_button_not_a_tab(app: TestClient) -> None:
+def test_saving_is_a_button_in_the_blue_bar_not_a_tab(app: TestClient) -> None:
     html = app.get("/").text
     tabs = re.search(r'<nav[^>]*class="tabs".*?</nav>', html, re.S)
     assert tabs and "Opslaan" not in tabs.group(0)
-    assert 'href="/opslaan"' in html and 'id="autosave"' in html
-    assert "Terug naar de vergelijking" in app.get("/opslaan").text
+    bar = re.search(r'<header class="brandbar">.*?</header>', html, re.S)
+    assert bar and 'href="/opslaan"' in bar.group(0) and "Opslaan/Openen" in bar.group(0)
+    assert 'id="autosave"' not in html, "the autosave switch lives on the Opslaan/Openen page"
+    settings = app.get("/opslaan").text
+    assert 'id="autosave"' in settings
+    assert re.search(r'<a [^>]*aria-current="page"[^>]*>Opslaan/Openen</a>', settings)
+    assert "Terug naar de vergelijking" in settings
+
+
+# --- loading a copy back -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fmt", ["xlsx", "ods", "json"])
+def test_a_copy_loads_back_whole(tmp_path: Path, fmt: str) -> None:
+    state, rows = saved_state(tmp_path)
+    loaded = align_export.load_copy(fmt, align_export.render(fmt, rows, state), rows)
+    assert loaded.complete and not loaded.skipped
+    assert loaded.state.decisions == {"DPR-227": align.Decision(wanted=6, note="Dubbel; zie actie")}
+    assert loaded.state.links == {"e5": ""}
+    [action] = loaded.state.actions
+    assert (action.key, action.text, action.who, action.status) == ("DPR-227", "Navragen", "Agnes Dubbink", "open")
+    assert action.created == state.actions[0].created
+
+
+def test_a_csv_copy_brings_back_the_decisions_only(tmp_path: Path) -> None:
+    state, rows = saved_state(tmp_path)
+    state.decisions["DPR-227"] = align.Decision(wanted=7.5, note="komma")
+    loaded = align_export.load_copy("csv", align_export.render("csv", rows, state), rows)
+    assert not loaded.complete and loaded.state.decisions["DPR-227"] == align.Decision(wanted=7.5, note="komma")
+    assert loaded.counts() == "1 besluiten"
+
+
+def test_a_copy_without_keys_is_matched_on_dpr_or_name(tmp_path: Path) -> None:
+    _, rows = saved_state(tmp_path)
+    other = next(r for r in rows if r.key != "DPR-227" and r.monday)
+    table = [
+        ["DPR", "Epic (monday.com)", "Gewenst STP", "Toelichting"],
+        ["DPR-227", "", 4, ""],
+        ["", other.name, None, "op naam"],
+        ["DPR-999", "Bestaat niet", 1, ""],
+    ]
+    loaded = align_export._from_tables({"Afstemming": table}, rows)
+    assert loaded.state.decisions["DPR-227"].wanted == 4
+    assert loaded.state.decisions[other.key].note == "op naam"
+    assert loaded.skipped == ["DPR-999"]
+
+
+def test_loading_a_copy_in_the_app(app: TestClient, tmp_path: Path) -> None:
+    state, rows = saved_state(tmp_path)
+    data = align_export.render("xlsx", rows, state)
+    app.post("/bewaar", data={"key": "DPR-227", "wanted": "1", "note": "wordt vervangen"})
+    reply = app.post("/laden", files={"bestand": ("kopie.xlsx", data)})
+    assert "Geladen uit kopie.xlsx" in reply.text and "1 besluiten, 1 acties, 1 koppelingen" in reply.text
+    assert "gewijzigd" in reply.headers["HX-Trigger"]
+    now = align.State.load(tmp_path / "state.json")
+    assert now.decision("DPR-227").note == "Dubbel; zie actie" and now.links == {"e5": ""}
+    [backup] = tmp_path.glob("state_voor-laden_*.json")
+    assert json.loads(backup.read_text())["decisions"]["DPR-227"]["note"] == "wordt vervangen"
+
+
+def test_a_bad_file_is_a_message(app: TestClient, tmp_path: Path) -> None:
+    assert "Laden lukte niet" in app.post("/laden", files={"bestand": ("kopie.xlsx", b"geen zip")}).text
+    assert "geen kopie" in app.post("/laden", files={"bestand": ("foto.png", b"x")}).text
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_loading_the_copy_in_the_folder(app: TestClient, tmp_path: Path) -> None:
+    folder = tmp_path / "kopie"
+    folder.mkdir()
+    state, rows = saved_state(tmp_path)
+    (folder / f"{align_export.FILE_STEM}.json").write_bytes(align_export.render("json", rows, state))
+    with align.editing(tmp_path / "state.json") as now:
+        now.saving.folder = str(folder)
+        now.decisions = {}
+    assert f"Laad {align_export.FILE_STEM}.json" in app.get("/opslaan").text
+    assert "Geladen uit" in app.post("/laden_uit_map", data={"fmt": "json"}).text
+    assert align.State.load(tmp_path / "state.json").decision("DPR-227").wanted == 6
+    assert "niet (meer)" in app.post("/laden_uit_map", data={"fmt": "ods"}).text

@@ -57,9 +57,8 @@ SHORT = {d: d for d in DISCIPLINES} | {"PO/AT": "AT"}
 #: More than this fraction of monday.com's STP apart, and a row is marked.
 DIFF_THRESHOLD = 0.10
 
-#: Where a decided total has to be made true. Keys go in the state file; values are shown.
+#: Where a decided total has to be made true — deduced from it by `where`, never chosen.
 WHERE = {
-    "": "—",
     "monday": "monday.com aanpassen",
     "database": "database aanpassen",
     "beide": "beide aanpassen",
@@ -265,10 +264,9 @@ def write_split(client: MondayClient, split: planning.Split, shares: dict[str, i
 
 @dataclass
 class Decision:
-    """What we agreed for one row: the total we want, where to change it, and why."""
+    """What we agreed for one row: the total we want, and its definition of done."""
 
     wanted: float | None = None
-    where: str = ""
     note: str = ""
 
 
@@ -285,6 +283,8 @@ class Action:
     sent: str = ""
     done: str = ""
 
+
+ACTION_FIELDS = frozenset(Action.__dataclass_fields__)
 
 #: The formats a copy can be saved in, with the extension each gets.
 FORMATS = {"xlsx": "Excel (.xlsx)", "ods": "LibreOffice Calc (.ods)", "csv": "CSV (.csv)", "json": "JSON (.json)"}
@@ -351,13 +351,32 @@ class State:
         if not path.exists():
             return cls(path=path)
         data = json.loads(path.read_text(encoding="utf-8"))
+        state = cls.from_content(data)
+        state.saving = Saving(**(data.get("saving") or {}))
+        state.path = path
+        return state
+
+    @classmethod
+    def from_content(cls, data: dict[str, Any]) -> State:
+        """The decisions, links and actions of a state file — or of a JSON copy, which holds them too."""
         return cls(
-            decisions={k: Decision(**v) for k, v in (data.get("decisions") or {}).items()},
-            links=dict(data.get("links") or {}),
-            actions=[Action(**a) for a in data.get("actions") or []],
-            saving=Saving(**(data.get("saving") or {})),
-            path=path,
+            # `where` was once chosen by hand; it is deduced now, so an old file's is dropped.
+            decisions={
+                k: Decision(wanted=v.get("wanted"), note=v.get("note", ""))
+                for k, v in (data.get("decisions") or {}).items()
+            },
+            links={str(k): str(v) for k, v in (data.get("links") or {}).items()},
+            actions=[Action(**{k: v for k, v in a.items() if k in ACTION_FIELDS}) for a in data.get("actions") or []],
         )
+
+    def backup(self) -> Path | None:
+        """Write what the user decided to a file of its own, next to the state file, before it is replaced."""
+        if self.path is None:
+            return None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = self.path.with_name(f"{self.path.stem}_voor-laden_{stamp}.json")
+        target.write_text(json.dumps(self.content(), indent=2, ensure_ascii=False), encoding="utf-8")
+        return target
 
     def save(self) -> None:
         if self.path is None:
@@ -631,6 +650,19 @@ def split_text(split: dict[str, Any]) -> str:
     return "/".join("—" if split.get(d) is None else fmt(float(split[d])) for d in DISCIPLINES)
 
 
+def where(row: Row, decision: Decision) -> str:
+    """Where the wanted total has to be made true: whichever side does not hold it yet.
+    A side the row does not have needs no change. `""` while nothing is decided."""
+    wanted = decision.wanted
+    if wanted is None:
+        return ""
+    monday = row.monday is not None and abs(wanted - row.monday.todo) > 1e-9
+    board = bool(row.board) and abs(wanted - row.board_total) > 1e-9
+    if monday and board:
+        return "beide"
+    return "monday" if monday else "database" if board else "geen"
+
+
 def message(who: str, actions: list[Action], rows: dict[str, Row], state: State, sender: str) -> str:
     """The note to send someone their open actions, with each row's figures and explanation."""
     first = who.split()[0] if who.strip() else ""
@@ -650,7 +682,7 @@ def message(who: str, actions: list[Action], rows: dict[str, Row], state: State,
                 lines.append(f"  {row.monday.url}")
         note = state.decision(a.key).note
         if note:
-            lines.append(f"  Toelichting: {note}")
+            lines.append(f"  Definition of Done: {note}")
         lines.append("")
     lines += ["Alvast bedankt!", sender.split()[0] if sender else ""]
     return "\n".join(lines).rstrip() + "\n"
@@ -659,7 +691,10 @@ def message(who: str, actions: list[Action], rows: dict[str, Row], state: State,
 def export_markdown(rows: list[Row], state: State) -> str:
     """Every decided or discussed row and every action, as a markdown note."""
     out = [f"# Afstemming kwartaalplanbord ↔ monday.com ({date.today().isoformat()})", ""]
-    out += ["| DPR | Epic | Database | monday.com | Gewenst | Waar | Toelichting |", "|---|---|---|---|---|---|---|"]
+    out += [
+        "| DPR | Epic | Database | monday.com | Gewenst | Waar | Definition of Done |",
+        "|---|---|---|---|---|---|---|",
+    ]
     for r in rows:
         d = state.decision(r.key)
         if d == Decision() and not state.actions_for(r.key):
@@ -667,7 +702,7 @@ def export_markdown(rows: list[Row], state: State) -> str:
         note = d.note.replace("\n", " ").replace("|", "\\|")
         out.append(
             f"| {r.dpr} | {r.name} | {fmt(r.board_total if r.board else None)} | {fmt(r.monday_total)} "
-            f"| {fmt(d.wanted)} | {WHERE.get(d.where, d.where)} | {note} |"
+            f"| {fmt(d.wanted)} | {WHERE.get(where(r, d), '')} | {note} |"
         )
     out += ["", "## Acties", ""]
     names = {r.key: r.title for r in rows}

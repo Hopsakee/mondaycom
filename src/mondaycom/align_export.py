@@ -4,10 +4,13 @@ The decisions file lives in `docs/tmp`, which git ignores: nothing reaches the p
 repository, and nothing is backed up either. This module writes a copy the user keeps
 where they choose — a OneDrive folder, say — as Excel, LibreOffice Calc, CSV or JSON.
 
-- **Two tables.** *Afstemming* is one row per comparison row: both sides' STP, the
-  splits, the difference and the decision. *Acties* is one row per action. Excel and Calc
-  get them as two sheets; CSV, being one table, carries the actions as a column of the
-  first; JSON carries the decisions file itself plus the first table.
+- **Three tables.** *Afstemming* is one row per comparison row: both sides' STP, the
+  splits, the difference and the decision. *Acties* is one row per action, *Koppelingen*
+  the DPR numbers changed in the app. Excel and Calc get them as three sheets; CSV, being
+  one table, carries the actions as a column of the first; JSON carries the decisions file
+  itself plus the first table.
+- **A copy loads back** (`load_copy`): JSON and the sheets whole, CSV its decisions only.
+  The `Sleutel` column ties a line to its row; a copy without one is matched on DPR or name.
 - **CSV is written for a Dutch Excel**: `;` between fields and a BOM, so it opens as
   columns rather than as one long line.
 - **Never into the repository.** A folder inside the checkout is refused, because that is
@@ -22,7 +25,8 @@ import io
 import json
 import os
 import re
-from dataclasses import dataclass, replace
+import uuid
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from functools import cache
 from pathlib import Path
@@ -35,14 +39,12 @@ from mondaycom.config import DISCIPLINES
 #: The copy's file name, without its extension. One file, rewritten on every save.
 FILE_STEM = "afstemming-kwartaalplanning"
 
-MEDIA_TYPES = {
-    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "ods": "application/vnd.oasis.opendocument.spreadsheet",
-    "csv": "text/csv; charset=utf-8",
-    "json": "application/json",
-}
-
 Cell = str | float | int | None
+
+#: The column that ties a line back to its row (`Row.key`), and a link to its board epic.
+#: Last in their tables, so they are out of the way of whoever reads the copy.
+KEY = "Sleutel"
+LINK_ID = "Epic-id (database)"
 
 
 # --- the folder -------------------------------------------------------------------------
@@ -238,8 +240,9 @@ def comparison_table(rows: list[Row], state: State) -> tuple[list[str], list[lis
         "Meer dan 10% af",
         "Gewenst STP",
         "Waar aanpassen",
-        "Toelichting",
+        "Definition of Done",
         "Open acties",
+        KEY,
     ]
     lines: list[list[Cell]] = []
     for r in rows:
@@ -264,22 +267,32 @@ def comparison_table(rows: list[Row], state: State) -> tuple[list[str], list[lis
                 _number(ratio * 100) if ratio is not None else None,
                 "ja" if r.flagged else "",
                 _number(d.wanted),
-                align.WHERE[d.where] if d.where else "",
+                align.WHERE.get(align.where(r, d), ""),
                 d.note,
                 open_actions or None,
+                r.key,
             ]
         )
     return head, lines
 
 
 def actions_table(rows: list[Row], state: State) -> tuple[list[str], list[list[Cell]]]:
-    head = ["DPR", "Epic", "Wie", "Actie", "Status", "Aangemaakt", "Verstuurd", "Klaar"]
+    head = ["DPR", "Epic", "Wie", "Actie", "Status", "Aangemaakt", "Verstuurd", "Klaar", KEY]
     by_key = {r.key: r for r in rows}
     lines: list[list[Cell]] = []
     for a in state.actions:
         r = by_key.get(a.key)
-        lines.append([r.dpr if r else "", r.name if r else a.key, a.who, a.text, a.status, a.created, a.sent, a.done])
+        lines.append(
+            [r.dpr if r else "", r.name if r else a.key, a.who, a.text, a.status, a.created, a.sent, a.done, a.key]
+        )
     return head, lines
+
+
+def links_table(rows: list[Row], state: State) -> tuple[list[str], list[list[Cell]]]:
+    """The DPR numbers changed in the app, by the board epic's id; an empty DPR is "no link"."""
+    names = {e.id: e.name for r in rows for e in r.board}
+    head = ["Database-epic", "DPR", LINK_ID]
+    return head, [[names.get(epic, ""), dpr, epic] for epic, dpr in sorted(state.links.items())]
 
 
 def _actions_text(state: State, key: str) -> str:
@@ -292,7 +305,11 @@ def _actions_text(state: State, key: str) -> str:
 def render(fmt: str, rows: list[Row], state: State) -> bytes:
     """The copy, as the bytes of one file in `fmt`."""
     if fmt in ("xlsx", "ods"):
-        sheets = {"Afstemming": comparison_table(rows, state), "Acties": actions_table(rows, state)}
+        sheets = {
+            "Afstemming": comparison_table(rows, state),
+            "Acties": actions_table(rows, state),
+            "Koppelingen": links_table(rows, state),
+        }
         return _xlsx(sheets) if fmt == "xlsx" else _ods(sheets)
     if fmt == "csv":
         return _csv(rows, state, comparison_table(rows, state))
@@ -405,7 +422,7 @@ def save_copy(state: State, rows: list[Row]) -> Path:
 
 
 def record_saved(state: State, where: str) -> None:
-    """Mark the current decisions as saved — to a folder, or as a download."""
+    """Mark the current decisions as saved, to `where`."""
     state.saving.saved_at = datetime.now().isoformat(timespec="seconds")
     state.saving.saved_to = where
     state.saving.saved_print = state.fingerprint
@@ -423,5 +440,217 @@ def autosave_due(state: State, now: datetime | None = None) -> bool:
     return ((now or datetime.now()) - last).total_seconds() >= saving.minutes * 60
 
 
-def download_name(fmt: str) -> str:
-    return f"{FILE_STEM}-{date.today().isoformat()}.{fmt}"
+# --- loading a copy back ----------------------------------------------------------------
+
+#: A copy bigger than this is not one of ours.
+MAX_UPLOAD = 10 * 1024 * 1024
+
+#: Where a line names its epic, in the order they are tried.
+NAME_COLUMNS = ("Epic (monday.com)", "Epic (database)", "Epic")
+
+
+@dataclass
+class Loaded:
+    """What a copy holds, ready to replace the decisions file's.
+
+    A CSV copy is one table, its actions a text column: it brings back the decisions only,
+    and leaves the actions and links as they are (`complete` is false).
+    """
+
+    state: State
+    complete: bool = True
+    #: Lines that named no epic the app knows, by their DPR or name.
+    skipped: list[str] = field(default_factory=list)
+
+    def counts(self) -> str:
+        words = [f"{len(self.state.decisions)} besluiten"]
+        if self.complete:
+            words += [f"{len(self.state.actions)} acties", f"{len(self.state.links)} koppelingen"]
+        return ", ".join(words)
+
+
+def format_of(name: str) -> str:
+    """The format of a file, by its extension."""
+    fmt = Path(name).suffix.lower().lstrip(".")
+    if fmt not in align.FORMATS:
+        raise ValueError(f"{name or 'Dit bestand'} is geen kopie: kies een .xlsx, .ods, .csv of .json.")
+    return fmt
+
+
+def saved_copies(state: State) -> list[Path]:
+    """The copies in the user's folder, newest first."""
+    if not state.saving.folder:
+        return []
+    folder = to_path(state.saving.folder)
+    found = [folder / f"{FILE_STEM}.{fmt}" for fmt in align.FORMATS]
+    return sorted((f for f in found if f.is_file()), key=lambda f: f.stat().st_mtime, reverse=True)
+
+
+def load_copy(fmt: str, data: bytes, rows: list[Row]) -> Loaded:
+    """Read a copy in `fmt` back. A line is tied to its row by the `Sleutel` column; a copy
+    from before there was one, or a line typed in by hand, by its DPR, else by its epic name."""
+    if fmt == "json":
+        return Loaded(State.from_content(json.loads(data.decode("utf-8-sig"))))
+    if fmt == "csv":
+        return _from_tables({"Afstemming": _read_csv(data)}, rows, complete=False)
+    if fmt in ("xlsx", "ods"):
+        return _from_tables(_read_xlsx(data) if fmt == "xlsx" else _read_ods(data), rows)
+    raise ValueError(f"Onbekend formaat {fmt!r}; kies uit {', '.join(align.FORMATS)}.")
+
+
+def _from_tables(tables: dict[str, list[list[Cell]]], rows: list[Row], complete: bool = True) -> Loaded:
+    if "Afstemming" not in tables:
+        raise ValueError("Geen tabblad Afstemming gevonden: is dit een kopie uit deze app?")
+    find = _finder(rows)
+    state = State()
+    skipped: list[str] = []
+    for line in _records(tables["Afstemming"]):
+        wanted = _float(line.get("Gewenst STP"))
+        note = _text(line.get("Definition of Done", line.get("Toelichting")))
+        if wanted is None and not note:
+            continue
+        key = find(line)
+        if key is None:
+            skipped.append(_label(line))
+            continue
+        state.decisions[key] = align.Decision(wanted=wanted, note=note)
+    if not complete:
+        return Loaded(state, complete=False, skipped=skipped)
+    for line in _records(tables.get("Acties", [])):
+        text = _text(line.get("Actie"))
+        if not text:
+            continue
+        key = find(line) or _text(line.get(KEY)) or _text(line.get("Epic"))
+        status = _text(line.get("Status")) or "open"
+        state.actions.append(
+            align.Action(
+                id=uuid.uuid4().hex[:10],
+                key=key,
+                text=text,
+                who=_text(line.get("Wie")),
+                status=status if status in align.ACTION_STATES else "open",
+                created=_text(line.get("Aangemaakt")),
+                sent=_text(line.get("Verstuurd")),
+                done=_text(line.get("Klaar")),
+            )
+        )
+    for line in _records(tables.get("Koppelingen", [])):
+        epic = _text(line.get(LINK_ID))
+        if epic:
+            state.links[epic] = _text(line.get("DPR")).upper()
+    return Loaded(state, skipped=skipped)
+
+
+def _finder(rows: list[Row]) -> Any:
+    """`line -> Row.key`: by the key itself, else a DPR or a name that names one row only."""
+    by_dpr: dict[str, list[str]] = {}
+    by_name: dict[str, list[str]] = {}
+    for r in rows:
+        if r.dpr:
+            by_dpr.setdefault(r.dpr.upper(), []).append(r.key)
+        for name in {r.name, *(e.name for e in r.board)}:
+            by_name.setdefault(name.strip().lower(), []).append(r.key)
+
+    def find(line: dict[str, Cell]) -> str | None:
+        key = _text(line.get(KEY))
+        if key:
+            return key  # a row the app no longer shows keeps its decision, as in the state file
+        for value, index in ((line.get("DPR"), by_dpr), *((line.get(c), by_name) for c in NAME_COLUMNS)):
+            found = index.get(_text(value).upper() if index is by_dpr else _text(value).lower(), [])
+            if len(set(found)) == 1:
+                return found[0]
+        return None
+
+    return find
+
+
+def _label(line: dict[str, Cell]) -> str:
+    return next((_text(line.get(c)) for c in ("DPR", *NAME_COLUMNS) if _text(line.get(c))), "een regel zonder naam")
+
+
+def _records(table: list[list[Cell]]) -> list[dict[str, Cell]]:
+    """A table's lines as dicts by the first line's headings; empty lines are left out."""
+    if not table:
+        return []
+    head = [_text(h) for h in table[0]]
+    return [{h: c for h, c in zip(head, line, strict=False) if h} for line in table[1:] if any(_text(c) for c in line)]
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _float(value: Any) -> float | None:
+    """A number as a sheet holds it — or as a Dutch CSV writes it, `7,5`."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
+    text = _text(value).replace(",", ".")
+    try:
+        return float(text) if text else None
+    except ValueError:
+        return None
+
+
+def _cell(value: Any) -> Cell:
+    """A spreadsheet's cell as one of ours: a number stays a number, a date becomes its ISO text."""
+    if value is None or (isinstance(value, int | float) and not isinstance(value, bool)):
+        return value
+    return _text(value)
+
+
+def _read_csv(data: bytes) -> list[list[Cell]]:
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("cp1252")  # saved again by an Excel that does not write UTF-8
+    first = text.split("\n", 1)[0]
+    delimiter = ";" if first.count(";") >= first.count(",") else ","
+    return [list(line) for line in csv.reader(io.StringIO(text), delimiter=delimiter)]
+
+
+def _read_xlsx(data: bytes) -> dict[str, list[list[Cell]]]:
+    from openpyxl import load_workbook
+
+    book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    return {
+        sheet.title: [[_cell(c) for c in line] for line in sheet.iter_rows(values_only=True)]
+        for sheet in book.worksheets
+    }
+
+
+def _read_ods(data: bytes) -> dict[str, list[list[Cell]]]:
+    """Every sheet of an .ods. Calc folds runs of equal cells and rows into one with a
+    repeat count — a sheet it saved ends in a million empty rows — so empties are not unfolded."""
+    from odf import teletype
+    from odf.namespaces import OFFICENS, TABLENS
+    from odf.opendocument import load
+    from odf.table import Table, TableCell, TableRow
+
+    doc = load(io.BytesIO(data))
+    tables: dict[str, list[list[Cell]]] = {}
+    for table in doc.spreadsheet.getElementsByType(Table):
+        lines: list[list[Cell]] = []
+        for tr in table.getElementsByType(TableRow):
+            line: list[Cell] = []
+            for tc in tr.getElementsByType(TableCell):
+                kind = tc.attributes.get((OFFICENS, "value-type"))
+                value: Cell = (
+                    float(tc.attributes[(OFFICENS, "value")])
+                    if kind in ("float", "percentage", "currency")
+                    else teletype.extractText(tc) or None
+                )
+                repeat = int(tc.attributes.get((TABLENS, "number-columns-repeated"), 1))
+                line += [value] * (repeat if value is not None else min(repeat, 64))
+            while line and line[-1] is None:
+                line.pop()
+            if line:
+                repeat = int(tr.attributes.get((TABLENS, "number-rows-repeated"), 1))
+                lines += [line] * min(repeat, 1000)
+        tables[str(table.getAttribute("name"))] = lines
+    return tables
