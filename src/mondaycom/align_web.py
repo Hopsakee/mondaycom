@@ -5,10 +5,12 @@ page of `monday web`: it exists to get the two plans to agree, and goes when the
 The logic is in `align.py`; this module only shows it and takes the decisions.
 
 - **Vergelijking** (`/`): one row per epic — the board's STP and split, monday.com's
-  STP-TODO and split, the difference (marked past 10% of monday.com's), and three fields
-  to decide: the total we want, where to change it, and why. Every field saves on change.
-- **Acties** (`/acties`): every open action grouped by person, with the message to send
-  them already written — copy it, or open it in the mail client — and a status to track.
+  STP-TODO and split, the difference (marked past 10% of monday.com's), the total we want
+  (where to change it follows from it, `align.where`) and its Definition of Done. Every
+  field saves on change. The Acties column is the open-action count, a link to the next tab.
+- **Acties** (`/acties`, `?epic=` for one epic, where actions are added): every open action
+  grouped by person, with the message to send them already written — copy it, or open it
+  in the mail client — and a status to track.
 
 monday.com is read once (~20s, the sprint boards) and cached in `_MONDAY`; the board dump
 and the decisions file are re-read on every request, so a new dump is picked up at once.
@@ -29,7 +31,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -70,8 +72,10 @@ from fasthtml.common import (
     Title,
     Tr,
     Ul,
+    UploadFile,
     fast_app,
 )
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
 from starlette.responses import Response
 
@@ -81,6 +85,9 @@ from mondaycom.client import MondayClient, MondayError
 from mondaycom.config import DISCIPLINES, ME, as_date
 
 APP_NAME = "Afstemming kwartaalplanning"
+
+#: The settings page's title, and the blue bar's button to it.
+SAVE_PAGE = "Opslaan/Openen"
 
 FETCH_ERRORS = (MondayError, ValueError, RuntimeError, OSError)
 
@@ -98,20 +105,18 @@ main.afstem { max-width: 1600px; padding-inline: 1.5rem; }
 .afstem td, .afstem th { vertical-align: top; padding: .45rem .5rem; }
 .afstem input, .afstem select, .afstem textarea, .afstem button.small {
   font-size: .82rem; padding: .25rem .45rem; margin: 0 0 .25rem; height: auto; }
-.afstem textarea { min-height: 4.2rem; min-width: 14rem; }
+.afstem textarea { min-height: 5.5rem; min-width: 22rem; resize: vertical; overflow: hidden;
+  field-sizing: content; }
 .afstem input[name=wanted] { width: 5.5rem; }
 .afstem .sub { display: block; color: var(--text-muted); font-size: .78rem; line-height: 1.35; }
 .afstem .warn { display: block; color: var(--tone-warning); font-size: .78rem; }
 .afstem .big { font-size: 1.05rem; font-weight: 700; }
 .afstem td.flag { background: color-mix(in srgb, var(--tone-warning) 16%, transparent); }
 .afstem td.flag .big { color: var(--heading); }
-.afstem td.acties { min-width: 19rem; }
-.afstem .acties ul { margin: 0 0 .35rem; padding: 0; list-style: none; }
-.afstem .acties li { margin: 0 0 .35rem; padding: 0; list-style: none; }
-.afstem .acties li.klaar { opacity: .55; text-decoration: line-through; }
+.afstem td.acties { text-align: center; font-weight: 700; font-size: 1rem; }
 .afstem .table-wrap { overflow-x: auto; }
-.afstem .acties form { display: grid; grid-template-columns: 1fr 7rem auto; gap: .25rem; margin: 0; }
-.afstem .acties select { width: auto; display: inline-block; }
+.afstem form.nieuwe-actie { display: grid; grid-template-columns: 1fr 12rem auto; gap: .35rem; margin: 0; }
+.afstem form.acties-filter { max-width: 40rem; margin: 0 0 .5rem; }
 .afstem form.koppel { display: flex; gap: .25rem; margin: .25rem 0 0; }
 .afstem form.koppel input { width: 7rem; }
 #filters .filters + .filters { border-top: 1px solid var(--line); padding-top: .6rem; margin-top: .2rem; }
@@ -134,6 +139,9 @@ main.afstem { max-width: 1600px; padding-inline: 1.5rem; }
 .folder-field input { flex: 1; margin-bottom: 0; }
 .folder-field button { width: auto; margin: 0; white-space: nowrap; }
 #mapkiezer { font-size: .9rem; }
+.afstem .laden { padding: 1rem 1.25rem; }
+.afstem .laden .page-tools { margin-bottom: .75rem; }
+.afstem .laden form { margin: 0; }
 #mapkiezer button.map-link { width: auto; display: inline-block; padding: .2rem .55rem; margin: 0 .3rem .3rem 0;
   font-size: .85rem; }
 #mapkiezer .map-snel, #mapkiezer .map-pad { margin-bottom: .6rem; }
@@ -158,6 +166,10 @@ function kiesMap(btn) {
   btn.closest('dialog').close();
   document.querySelector('#opslaan-form button[type=submit]').focus();
 }
+function groei(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 2 + 'px'; }
+document.addEventListener('htmx:afterSettle', function () {
+  document.querySelectorAll('.afstem textarea[name=note]').forEach(groei);
+});
 function kopieer(btn, id) {
   navigator.clipboard.writeText(document.getElementById(id).innerText).then(function () {
     var was = btn.textContent; btn.textContent = 'Gekopieerd'; setTimeout(function () { btn.textContent = was; }, 1500);
@@ -294,11 +306,14 @@ def email_for(name: str, mon: align.Monday) -> str:
 
 def page(title: str, about: str, *content: Any, tools: Any = None) -> Any:
     """Every page: the save banner, the title with its lede and the page's `tools` on the
-    right, the two tabs, and the content. Saving is not a tab: it is a button among the tools."""
+    right, the two tabs, and the content. Saving is not a tab: it is a button in the blue bar."""
     links = (("Vergelijking", index), ("Acties", acties))
     return (
         Title(f"{title} · {APP_NAME}"),
-        theme.brandbar(APP_NAME),
+        theme.brandbar(
+            APP_NAME,
+            A(SAVE_PAGE, href=opslaan, cls="tool", aria_current="page" if title == SAVE_PAGE else None),
+        ),
         Main(
             # The poller holds the banner (`#opslag`) rather than being it: an innerHTML swap
             # into a wrapper of the same id would nest a second `#opslag` on every poll.
@@ -405,7 +420,7 @@ def wanted_words(r: Row, d: align.Decision) -> str:
         out.append(f"monday.com {d.wanted - r.monday.todo:+g}")
     if r.board:
         out.append(f"database {d.wanted - r.board_total:+g}")
-    return " · ".join(out)
+    return " · ".join([*out, align.WHERE[align.where(r, d)]])
 
 
 def wanted_span(r: Row, d: align.Decision, oob: bool = False) -> Any:
@@ -434,21 +449,16 @@ def decision_cells(r: Row, state: align.State) -> list[Any]:
                 hx_trigger="change",
                 **save,
             ),
-            Select(
-                *[Option(label, value=k, selected=k == d.where) for k, label in align.WHERE.items()],
-                name="where",
-                aria_label="Waar aanpassen",
-                hx_trigger="change",
-                **save,
-            ),
             wanted_span(r, d),
         ),
         Td(
             Textarea(
                 d.note,
                 name="note",
-                placeholder="Waarom?",
-                aria_label="Toelichting",
+                placeholder="Wanneer is dit klaar?",
+                aria_label="Definition of Done",
+                rows=3,
+                oninput="groei(this)",
                 hx_trigger="change, keyup changed delay:1s",
                 **save,
             )
@@ -467,31 +477,19 @@ def status_select(a: align.Action, **hx: Any) -> Any:
     )
 
 
+def actions_count(key: str, state: align.State) -> str:
+    """`-` with no actions, else the open ones — `0` once every action is klaar."""
+    actions = state.actions_for(key)
+    return str(sum(a.status != "klaar" for a in actions)) if actions else "-"
+
+
 def actions_cell(key: str, state: align.State) -> Any:
-    cid = f"acties-{slug(key)}"
-    items = [
-        Li(
-            Strong(a.who or "niemand"),
-            " — ",
-            a.text,
-            " ",
-            status_select(a, hx_vals={"id": a.id}, hx_target=f"#{cid}", hx_swap="outerHTML"),
-            cls=a.status,
-        )
-        for a in state.actions_for(key)
-    ]
+    """The open-action count, a link to this epic's actions — where they are added, too."""
+    count, total = actions_count(key, state), len(state.actions_for(key))
+    hint = f"{count} van {total} acties open — bekijk of voeg toe" if total else "Nog geen acties — voeg er een toe"
     return Td(
-        Ul(*items) if items else "",
-        Form(
-            Input(name="tekst", placeholder="Nieuwe actie…", aria_label="Actie", required=True),
-            Input(name="wie", list="mensen", placeholder="Wie", aria_label="Wie"),
-            Button("+", cls="small", title="Actie toevoegen"),
-            hx_post=actie,
-            hx_vals={"key": key},
-            hx_target=f"#{cid}",
-            hx_swap="outerHTML",
-        ),
-        id=cid,
+        A(actions_count(key, state), href=acties.to(epic=key), title=hint),
+        id=f"acties-{slug(key)}",
         cls="acties",
     )
 
@@ -536,9 +534,9 @@ def comparison_table(rows: list[Row], state: align.State) -> Any:
         ("Database STP", "De punten op het kwartaalplanbord, per discipline, en de verdeling die daaruit volgt"),
         ("monday.com STP", "STP-TODO op Epics-STP-distribution, de verdeling, en wat de sprintborden nu hebben"),
         ("Verschil", "Database min monday.com. Gemarkeerd bij meer dan 10% van monday.com"),
-        ("Gewenst STP", "Het totaal dat we willen, en waar dat moet worden aangepast"),
-        ("Toelichting", "Waarom we dat besloten"),
-        ("Acties", "Wat iemand eerst moet uitzoeken of doen"),
+        ("Gewenst STP", "Het totaal dat we willen; daaronder wat dat aan beide kanten betekent"),
+        ("Definition of Done", "Wanneer deze epic klaar is"),
+        ("Acties", "Open acties: wat iemand eerst moet uitzoeken of doen. Klik voor de acties van deze epic"),
     ]
     return Div(
         Table(
@@ -668,7 +666,8 @@ OUTSIDE_HELP = (
 
 def autosave_control(state: align.State) -> Any:
     """The autosave switch and its interval. Each change is saved the moment it is made — it
-    is not part of any form's submit — so the switch shows what is stored, on every page.
+    is not part of any form's submit — so the switch shows what is stored. It sits on the
+    Opslaan/Openen page only, in the folder form, since a folder is what it waits for.
     Without a folder there is nowhere to save to, so it waits for one."""
     s = state.saving
     live = {
@@ -710,11 +709,6 @@ def autosave_control(state: align.State) -> Any:
     )
 
 
-def save_tools(state: align.State) -> Any:
-    """The page head's saving tools: autosave, and the way to the settings page."""
-    return (autosave_control(state), A("Opslaan…", href=opslaan, role="button", cls="secondary outline small"))
-
-
 @app.post
 def autosave_zetten(autosave: bool = False, minutes: int = 5) -> Any:
     """Store the switch and the interval. Turned on with changes no copy holds yet, it saves
@@ -744,7 +738,6 @@ def index() -> Any:
             hx_trigger="load",
             hx_swap="outerHTML",
         ),
-        tools=save_tools(align.State.load()),
     )
 
 
@@ -788,7 +781,6 @@ def vergelijking(
             summary(shown, state),
             outside_note(outside) if outside and not buiten else "",
             comparison_table(shown, state),
-            Datalist(*[Option(value=n) for n in people_names(board, mon)], id="mensen"),
             id="vergelijking",
         ),
         forms.planning_date_fields(str(sprint or ""), str(quarter))(hx_swap_oob="true"),
@@ -820,11 +812,10 @@ def parse_wanted(text: str) -> float | None:
 
 
 @app.post
-def bewaar(key: str, wanted: str = "", where: str = "", note: str = "") -> Any:
+def bewaar(key: str, wanted: str = "", note: str = "") -> Any:
     mon = monday()
     with editing() as state:
-        where = where if where in align.WHERE else ""
-        state.decisions[key] = align.Decision(wanted=parse_wanted(wanted), where=where, note=note)
+        state.decisions[key] = align.Decision(wanted=parse_wanted(wanted), note=note)
     row = find_row(key, state, mon)
     return wanted_span(row, state.decision(key), oob=True) if row else ""
 
@@ -834,16 +825,14 @@ def actie(key: str, tekst: str = "", wie: str = "") -> Any:
     with editing() as state:
         if tekst.strip():
             state.add_action(key, tekst, wie)
-    return actions_cell(key, state)
+    return Response(headers={"HX-Refresh": "true"})
 
 
 @app.post
-def actie_status(id: str, status: str = "open", terug: str = "") -> Any:
+def actie_status(id: str, status: str = "open") -> Any:
     with editing() as state:
-        action = state.set_status(id, status)
-    if terug == "acties":
-        return Response(headers={"HX-Refresh": "true"})
-    return actions_cell(action.key, state) if action else ""
+        state.set_status(id, status)
+    return Response(headers={"HX-Refresh": "true"})
 
 
 @app.post
@@ -880,15 +869,51 @@ def mailto(email: str, body: str) -> str:
     return f"mailto:{quote(email)}?subject={subject}&body={quote(body)}"
 
 
+def epic_filter(by_key: dict[str, Row], state: align.State, epic: str) -> Any:
+    """Pick one epic — the ones with actions first — or all; changing it reloads the page."""
+    with_actions = {a.key for a in state.actions}
+    keys = sorted(by_key, key=lambda k: (k not in with_actions, by_key[k].title.lower()))
+    return Form(
+        Label(
+            "Epic",
+            Select(
+                Option("Alle epics", value=""),
+                *[Option(by_key[k].title, value=k, selected=k == epic) for k in keys],
+                name="epic",
+                onchange="this.form.submit()",
+            ),
+        ),
+        method="get",
+        action=acties.to(),
+        cls="acties-filter",
+    )
+
+
+def new_action_form(key: str, people: list[str]) -> Any:
+    return Form(
+        Input(name="tekst", placeholder="Nieuwe actie…", aria_label="Actie", required=True),
+        Input(name="wie", list="mensen", placeholder="Wie", aria_label="Wie"),
+        Button("Actie toevoegen", cls="small"),
+        Datalist(*[Option(value=n) for n in people], id="mensen"),
+        hx_post=actie,
+        hx_vals={"key": key},
+        hx_swap="none",
+        cls="nieuwe-actie",
+    )
+
+
 @rt
-def acties() -> Any:
+def acties(epic: str = "") -> Any:
     try:
         mon = monday()
     except FETCH_ERRORS as exc:
         return page("Acties", "Open acties per persoon.", error(exc))
     state = align.State.load()
     by_key = {r.key: r for r in all_rows(state, mon)}
-    open_ = [a for a in state.actions if a.status != "klaar"]
+    if epic not in by_key and not state.actions_for(epic):
+        epic = ""
+    mine = [a for a in state.actions if not epic or a.key == epic]
+    open_ = [a for a in mine if a.status != "klaar"]
     people: dict[str, list[align.Action]] = {}
     for a in open_:
         people.setdefault(a.who, []).append(a)
@@ -921,13 +946,28 @@ def acties() -> Any:
                 cls="persoon",
             )
         )
-    done = [a for a in state.actions if a.status == "klaar"]
+    done = [a for a in mine if a.status == "klaar"]
+    row = by_key.get(epic)
+    head: list[Any] = [epic_filter(by_key, state, epic)]
+    if epic:
+        head.append(
+            Div(
+                H3(f"Nieuwe actie voor {row.title if row else epic}"),
+                new_action_form(epic, people_names(align.load_board(), mon)),
+                cls="persoon",
+            )
+        )
+    empty = (
+        "Nog geen open acties voor deze epic."
+        if epic
+        else "Nog geen open acties. Kies een epic om er een toe te voegen."
+    )
     return page(
         "Acties",
         "Open acties per persoon, met het bericht om te sturen. De status houdt bij wat al verstuurd is.",
-        *(blocks or [P("Nog geen open acties. Voeg ze toe op de Vergelijking.")]),
+        *head,
+        *(blocks or [P(empty)]),
         Details(Summary(f"Klaar ({len(done)})"), Ul(*[action_line(a, by_key) for a in done])) if done else "",
-        tools=A("Opslaan…", href=opslaan, role="button", cls="secondary outline small"),
     )
 
 
@@ -940,7 +980,7 @@ def action_line(a: align.Action, by_key: dict[str, Row]) -> Any:
         a.text,
         " ",
         Small(stamp, cls="sub"),
-        status_select(a, hx_vals={"id": a.id, "terug": "acties"}, style="width:auto"),
+        status_select(a, hx_vals={"id": a.id}, style="width:auto"),
     )
 
 
@@ -1011,7 +1051,7 @@ def banner(state: align.State) -> Any:
             "tone-warning",
             Strong("Niet opgeslagen. "),
             f"Je wijzigingen staan alleen in {here}: niet in git, en nergens geback-upt. ",
-            A("Kies een map of download een kopie", href=opslaan),
+            A("Kies een map", href=opslaan),
             ".",
             role="status",
         )
@@ -1095,8 +1135,8 @@ def saving_form(state: align.State) -> Any:
         P(
             Small(
                 f"Het bestand heet {align_export.FILE_STEM}.<formaat> en wordt bij elke keer opslaan "
-                "overschreven. Excel en Calc krijgen twee tabbladen, Afstemming en Acties; CSV is één tabel "
-                "(met ; voor een Nederlandse Excel) met de acties in een kolom; JSON bevat alles.",
+                "overschreven. Excel en Calc krijgen drie tabbladen, Afstemming, Acties en Koppelingen; "
+                "CSV is één tabel (met ; voor een Nederlandse Excel) met de acties in een kolom; JSON bevat alles.",
                 cls="sub",
             )
         ),
@@ -1124,10 +1164,11 @@ def outcome(state: align.State) -> Any:
 def opslaan() -> Any:
     state = align.State.load()
     return page(
-        "Opslaan",
+        SAVE_PAGE,
         f"Je besluiten en acties staan lokaal in docs/tmp/{align.state_path().name}. Die map staat niet in git "
-        "(de repository is openbaar) en wordt nergens geback-upt. Bewaar hier een kopie in een eigen map.",
-        H3("In een map"),
+        "(de repository is openbaar) en wordt nergens geback-upt. Bewaar hier een kopie in een eigen map, "
+        "of open een kopie die je eerder opsloeg.",
+        H3("Opslaan in een map"),
         saving_form(state),
         outcome(state),
         cards.dialog(
@@ -1135,31 +1176,102 @@ def opslaan() -> Any:
             "Waar je eigen kopie komt. Een map in de repository kan niet: die is openbaar.",
             Div(P("Mappen lezen…", aria_busy="true"), id="mapkiezer"),
         )(id="mapkiezer-dialog"),
-        H3("Of download een kopie"),
-        P(
-            *[
-                (
-                    A(
-                        label,
-                        href=download.to(fmt=k),
-                        role="button",
-                        cls="secondary outline",
-                        onclick="setTimeout(function () { htmx.trigger(document.body, 'gewijzigd'); }, 1500)",
-                    ),
-                    " ",
-                )
-                for k, label in align.FORMATS.items()
-            ]
-        ),
-        P(
-            Small(
-                "Je browser bewaart een download in de map die hij daarvoor gebruikt, of vraagt waar. "
-                "Een download telt als opgeslagen; automatisch opslaan kan alleen naar een map hierboven.",
-                cls="sub",
-            )
-        ),
+        H3("Een kopie openen"),
+        load_section(state),
         tools=A("← Terug naar de vergelijking", href=index, role="button", cls="secondary outline small"),
     )
+
+
+def load_section(state: align.State) -> Any:
+    """Load a copy back: one from the user's folder, or any file they pick."""
+    confirm = (
+        "De besluiten, acties en koppelingen in de app vervangen door die uit {}? De huidige stand wordt eerst bewaard."
+    )
+    copies = [
+        Button(
+            f"Laad {f.name}",
+            Small(f" opgeslagen {when(datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec='seconds'))}"),
+            type="button",
+            cls="secondary outline",
+            hx_post=laden_uit_map,
+            hx_vals={"fmt": f.suffix.lstrip(".")},
+            hx_target="#laden-uitkomst",
+            hx_swap="outerHTML",
+            hx_confirm=confirm.format(f.name),
+        )
+        for f in align_export.saved_copies(state)
+    ]
+    return Div(
+        P(
+            "Zet de app terug naar een kopie die je eerder opsloeg: de besluiten, acties en koppelingen "
+            "uit het bestand vervangen die in de app. De huidige stand gaat eerst naar een eigen bestand "
+            f"naast {align.state_path().name}, zodat je niets kwijtraakt. ",
+            Small(
+                "Een CSV is één tabel en brengt alleen de besluiten terug; acties en koppelingen blijven dan "
+                "zoals ze zijn. Excel, Calc en JSON brengen alles terug.",
+                cls="sub",
+            ),
+        ),
+        Div(*copies, cls="page-tools") if copies else "",
+        Form(
+            Span(
+                Input(type="file", name="bestand", accept=",".join(f".{k}" for k in align.FORMATS), required=True),
+                Button("Laden uit bestand", type="submit", cls="secondary"),
+                cls="folder-field",
+            ),
+            hx_post=laden,
+            hx_encoding="multipart/form-data",
+            hx_target="#laden-uitkomst",
+            hx_swap="outerHTML",
+            hx_confirm=confirm.format("dit bestand"),
+            id="laden-form",
+        ),
+        Div(id="laden-uitkomst"),
+        cls="panel laden",
+    )
+
+
+def apply_copy(name: str, data: bytes) -> Any:
+    """Replace the decisions with a copy's, after keeping the current ones; say what happened."""
+    try:
+        fmt = align_export.format_of(name)
+        if len(data) > align_export.MAX_UPLOAD:
+            raise ValueError(f"{name} is groter dan {align_export.MAX_UPLOAD // 2**20} MB: dit is geen kopie.")
+        loaded = align_export.load_copy(fmt, data, all_rows(align.State.load(), monday()))
+    # A file from anywhere can fail to parse in as many ways as there are parsers (a broken
+    # zip, bad XML, a sheet edited out of shape): every one is a message, never a 500.
+    except Exception as exc:
+        return Div(P(Strong("Laden lukte niet: "), str(exc), cls="warn"), id="laden-uitkomst")
+    with editing() as state:
+        backup = state.backup()
+        state.decisions = loaded.state.decisions
+        if loaded.complete:
+            state.actions = loaded.state.actions
+            state.links = loaded.state.links
+    return Div(
+        P(Strong(f"Geladen uit {name}: "), f"{loaded.counts()}."),
+        P(Small(f"De vorige stand staat in {backup}.", cls="sub")) if backup else "",
+        P(Small(f"Niet herkend, dus niet geladen: {', '.join(loaded.skipped)}.", cls="warn") if loaded.skipped else ""),
+        P(A("Naar de vergelijking", href=index, role="button", cls="small")),
+        id="laden-uitkomst",
+    )
+
+
+@app.post
+async def laden(bestand: UploadFile) -> Any:
+    """A copy the user picked. Read here, applied in a thread: a cold monday.com read takes
+    twenty seconds, and the event loop is not where that should happen."""
+    data = await bestand.read(align_export.MAX_UPLOAD + 1)
+    return await run_in_threadpool(apply_copy, bestand.filename or "", data)
+
+
+@app.post
+def laden_uit_map(fmt: str = "") -> Any:
+    """The copy in the user's folder, by its format — never a path the request names."""
+    found = [f for f in align_export.saved_copies(align.State.load()) if f.suffix == f".{fmt}"]
+    if not found:
+        return Div(P("Die kopie staat niet (meer) in je map.", cls="warn"), id="laden-uitkomst")
+    return apply_copy(found[0].name, found[0].read_bytes())
 
 
 def quick_label(folder: str) -> str:
@@ -1255,24 +1367,6 @@ def opslaan_instellen(format: str = "xlsx", folder: str = "") -> Any:
         s.autosave = s.autosave and bool(s.folder)
         save_now(state, mon)
     return outcome(state), autosave_control(state)(hx_swap_oob="true")
-
-
-@rt
-def download(fmt: str = "xlsx") -> Any:
-    if fmt not in align.FORMATS:
-        return Response("Onbekend formaat", status_code=400)
-    try:
-        mon = monday()
-    except FETCH_ERRORS as exc:
-        return Response(f"monday.com lezen lukte niet: {exc}", status_code=502)
-    with align.editing() as state:
-        data = align_export.render(fmt, all_rows(state, mon), state)
-        align_export.record_saved(state, f"een download ({align_export.download_name(fmt)})")
-    return Response(
-        data,
-        media_type=align_export.MEDIA_TYPES[fmt],
-        headers={"Content-Disposition": f'attachment; filename="{align_export.download_name(fmt)}"'},
-    )
 
 
 def run(host: str = "127.0.0.1", port: int = 5002, reload: bool = False) -> None:

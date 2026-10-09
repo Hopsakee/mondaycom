@@ -166,6 +166,11 @@ code, pre {{ border-radius: 6px; }}
   border-radius: 6px; color: var(--brand-ink); font-size: 1rem; transition: background-color .15s ease;
 }}
 .brandbar button.theme:hover {{ background: rgba(255, 255, 255, .15); }}
+.brandbar a.tool {{ color: var(--brand-ink); border: 1px solid rgba(255, 255, 255, .6); border-radius: 6px;
+  padding: .3rem .8rem; font-size: .9rem; font-weight: 600; text-decoration: none;
+  transition: background-color .15s ease; }}
+.brandbar a.tool:hover, .brandbar a.tool[aria-current="page"] {{ background: rgba(255, 255, 255, .15); }}
+.brandbar a.tool:focus-visible {{ outline: 2px solid #ffffff; outline-offset: 2px; }}
 .brandbar button.theme:focus-visible {{ outline: 2px solid #ffffff; outline-offset: 2px; }}
 
 main.page {{ flex: 1; padding-top: 1.5rem; padding-bottom: 2.5rem; }}
@@ -249,8 +254,9 @@ function toggleTheme(btn) {
 """
 
 
-def brandbar(app_name: str) -> Any:
-    """The blue bar across the top: the word mark (home), the app, the internal pay-off."""
+def brandbar(app_name: str, *tools: Any) -> Any:
+    """The blue bar across the top: the word mark (home), the app, the internal pay-off, and
+    the app's own `tools` (a link styled `.tool`) on the right, before the theme switch."""
     return Header(
         Div(
             A("WDODelta", href="/", cls="wm", aria_label="WDODelta — naar de startpagina"),
@@ -258,6 +264,7 @@ def brandbar(app_name: str) -> Any:
             Span(app_name, cls="app"),
             Span("jouw waterschap", cls="payoff"),
             Span(cls="grow"),
+            *tools,
             Button(
                 "☾",
                 type="button",
